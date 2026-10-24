@@ -1,0 +1,41 @@
+# --- Secrets (never commit) ---
+.env
+.env.*
+!.env.example
+credentials.json
+token.json
+*.token
+secrets.toml
+.streamlit/secrets.toml
+tokens/
+data/
+*.db
+*.sqlite3
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+*.egg-info/
+.Python
+build/
+dist/
+.venv/
+venv/
+env/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# --- OS / editor ---
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+
+# --- Logs / scratch ---
+logs/
+*.log
+scratch/

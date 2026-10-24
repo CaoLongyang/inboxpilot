@@ -1,0 +1,21 @@
+# Core
+fastapi>=0.115,<1.0
+uvicorn[standard]>=0.30,<1.0
+pydantic>=2.10,<3.0
+pydantic-settings>=2.6,<3.0
+python-dotenv>=1.0,<2.0
+httpx>=0.27,<1.0
+
+# LLM: Nebius Token Factory exposes an OpenAI-compatible API
+openai>=1.50,<2.0
+
+# Gmail
+google-api-python-client>=2.140,<3.0
+google-auth>=2.35,<3.0
+google-auth-oauthlib>=1.2,<2.0
+
+# Frontend
+streamlit>=1.40,<2.0
+
+# Dev / test
+pytest>=8.0,<9.0
