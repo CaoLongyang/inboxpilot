@@ -33,7 +33,7 @@ class Settings(BaseSettings):
 
     # --- Nebius Token Factory ---
     nebius_api_key: str = ""
-    nebius_base_url: str = "https://api.studio.nebius.com/v1/"
+    nebius_base_url: str = "https://api.tokenfactory.nebius.com/v1/"
     nebius_model_fast: str = ""
     nebius_model_reasoning: str = ""
     nebius_timeout_seconds: float = 60.0

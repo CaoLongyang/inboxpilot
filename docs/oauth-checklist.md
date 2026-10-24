@@ -66,6 +66,30 @@ long-lived token, and that has to be verified by 2026-10-28 at the latest.**
 - [ ] Add an uptime check that calls a read-only Gmail endpoint once a day
       between 2026-11-01 and 2026-12-15, so we notice expiry before judges do.
 
+## Answers verified against Google documentation (2026-10-24)
+
+- **Scope category:** `gmail.readonly`, `gmail.compose` and `gmail.modify` are all
+  **restricted** scopes. `gmail.compose` is *not* the cheap option — it can send.
+  We still ask only for read + compose, never `gmail.modify` or `mail.google.com`.
+- **Can we use it unverified?** Yes. Google's own guidance: *"Personal Use apps:
+  If the app is for your personal use (fewer than 100 users), you and your
+  limited number of users can continue using the app without going through
+  verification (users will be allowed to click through 'unverified app' warning
+  screens during sign-in)."* Going beyond 100 users would require verification
+  plus a CASA security assessment. We stay far below that.
+- **Publishing status:** Google requires the production tier project to be
+  published as **In production**. Testing status is for development only, and it
+  is exactly what triggers the 7-day refresh token expiry.
+- **7-day expiry, verbatim:** *"A Google Cloud Platform project with an OAuth
+  consent screen configured for an external user type and a publishing status of
+  'Testing' is issued a refresh token expiring in 7 days."*
+- **Password changes kill the token:** Google invalidates refresh tokens that
+  contain Gmail scopes when the account password changes. Do not change the demo
+  account password before judging ends (2026-12-15).
+- **Token cap:** 100 refresh tokens per Google account per client id. Creating a
+  new one silently invalidates the oldest. Do not re-run the consent flow
+  repeatedly "just to be safe".
+
 ## Things to verify in the Google Cloud console, not from memory
 
 - [ ] Which scopes are classified sensitive vs restricted for this app.

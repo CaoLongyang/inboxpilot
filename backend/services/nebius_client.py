@@ -4,11 +4,12 @@ Token Factory exposes an OpenAI-compatible chat completions API, so the
 official `openai` SDK is used with a custom base_url.
 
 Two model roles (see hackathon Track 2 guidance):
-- `fast`      -> classification / summary / extraction  (Nemotron Nano or Super)
+- `fast`      -> classification / summary / extraction  (Nemotron Super or Nano)
 - `reasoning` -> WhatIf decision trees and planning      (Nemotron Ultra)
 
-TODO(Day 1 / A2): confirm `NEBIUS_BASE_URL` and the exact model IDs from the
-Nebius console. Run `python -m backend.services.nebius_client` to smoke test.
+Base URL is `https://api.tokenfactory.nebius.com/v1/` per the official
+Token Factory quickstart. Model IDs drift as the catalogue changes, so always
+verify them with `python -m scripts.check_setup` instead of trusting this file.
 """
 
 from __future__ import annotations
