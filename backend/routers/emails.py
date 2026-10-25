@@ -9,7 +9,7 @@ router = APIRouter(prefix="/emails", tags=["emails"])
 
 
 @router.get("", response_model=EmailListResponse)
-async def list_emails(max_results: int = 10, q: str | None = None) -> EmailListResponse:
+def list_emails(max_results: int = 10, q: str | None = None) -> EmailListResponse:
     """Recent emails (FR-02, task A5/A6).
 
     `max_results` is clamped server-side to MAX_EMAILS_PER_REQUEST, so a client
@@ -20,7 +20,7 @@ async def list_emails(max_results: int = 10, q: str | None = None) -> EmailListR
 
 
 @router.get("/{message_id}", response_model=EmailDetail)
-async def get_email(message_id: str) -> EmailDetail:
+def get_email(message_id: str) -> EmailDetail:
     """One email with its body (FR-02, task A5/A6)."""
     # get_email already returns an EmailDetail. Do not re-wrap it: pydantic
     # models are not mappings, so `EmailDetail(**model)` raises TypeError.
@@ -28,7 +28,7 @@ async def get_email(message_id: str) -> EmailDetail:
 
 
 @router.get("/{message_id}/thread", response_model=list[EmailDetail])
-async def get_thread(message_id: str) -> list[EmailDetail]:
+def get_thread(message_id: str) -> list[EmailDetail]:
     """Every message in the thread this message belongs to (task A5).
 
     Takes a message id rather than a thread id so the caller never has to know

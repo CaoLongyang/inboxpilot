@@ -71,7 +71,10 @@ class ExecutionStatus(str, Enum):
 class Evidence(APIModel):
     """A verbatim quote from the source email. Not a paraphrase."""
 
-    message_id: str
+    # Stamped by the server from the email actually read. The model is never
+    # asked to echo it: it adds a failure mode with no benefit, and a model that
+    # hallucinated the id would silently break the link back to the source.
+    message_id: str = ""
     field: Literal["subject", "body", "snippet"] = "body"
     quote: str = Field(min_length=1, max_length=1000)
 

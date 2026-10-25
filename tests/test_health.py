@@ -30,7 +30,8 @@ def test_request_id_header_is_present() -> None:
 
 
 def test_unimplemented_endpoint_uses_error_envelope() -> None:
-    response = client.post("/analyze", json={"message_id": "abc"})
+    # /analyze is implemented as of Day 3; /actions/plan lands on Day 4.
+    response = client.post("/actions/plan", json={"message_id": "abc"})
     assert response.status_code == 501
     body = response.json()
     assert body["error"]["code"] == "not_implemented"
