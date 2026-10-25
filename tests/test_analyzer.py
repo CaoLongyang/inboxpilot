@@ -263,8 +263,13 @@ def test_long_body_is_truncated_and_disclosed(model) -> None:
 
 
 @pytest.fixture
-def wired(monkeypatch, model):
-    """Analyzer + Gmail both faked, so the endpoint can be called directly."""
+def wired(monkeypatch, model, temp_db):
+    """Analyzer + Gmail both faked, so the endpoint can be called directly.
+
+    `temp_db` is requested for its side effect: since A9, `/analyze` writes to
+    SQLite, so without an empty database per test the first test's result would
+    be served from cache to the next one and the model would never be called.
+    """
     email = make_email()
     monkeypatch.setattr(gmail_client, "get_email", lambda _mid: email)
     return model

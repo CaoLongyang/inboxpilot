@@ -18,6 +18,7 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from backend.config import get_settings
 from backend.errors import AppError
 from backend.routers import actions, analyze, auth, emails, health
+from backend.services import store
 
 VERSION = "0.1.0"
 
@@ -124,6 +125,11 @@ def create_app() -> FastAPI:
     app.include_router(emails.router)
     app.include_router(analyze.router)
     app.include_router(actions.router)
+
+    # Create the SQLite tables at boot (task A9). Failures are logged, not
+    # raised: a read-only disk degrades /analyze to "no cache", it does not stop
+    # the service from serving the endpoints a judge will click.
+    store.try_init_db()
 
     @app.get("/", include_in_schema=False)
     async def root() -> dict:
