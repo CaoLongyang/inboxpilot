@@ -15,8 +15,16 @@ from __future__ import annotations
 
 import argparse
 import sys
+from pathlib import Path
 
 import uvicorn
+
+# Work whether this is run as `python -m scripts.serve` (cwd on sys.path) or as
+# `python scripts/serve.py` (only scripts/ on sys.path, so `backend` would not
+# be importable).
+REPO_ROOT = Path(__file__).resolve().parent.parent
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
 
 DEFAULT_PORT = 8000
 

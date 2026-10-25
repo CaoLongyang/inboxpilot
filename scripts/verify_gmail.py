@@ -14,8 +14,13 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-from backend.config import get_settings
-from backend.services import gmail_client, token_store
+# Work whether run as `python -m scripts.verify_gmail` or as a plain file.
+REPO_ROOT = Path(__file__).resolve().parent.parent
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from backend.config import get_settings  # noqa: E402
+from backend.services import gmail_client, token_store  # noqa: E402
 
 logging.disable(logging.WARNING)
 
