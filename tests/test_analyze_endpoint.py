@@ -155,3 +155,53 @@ def test_cache_hit_skips_gmail_entirely(
     response = client.post("/analyze", json={"message_id": "msg-cache"})
     assert response.status_code == 200
     assert response.json()["cached"] is True
+
+
+def test_missing_api_key_is_a_configuration_error(
+    temp_db: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Task A10: the model provider being unusable must be a clear, stable error.
+
+    This is the state a fresh clone is in, so it is the error a reviewer is most
+    likely to hit first. It must name the missing variable and must not leave a
+    half-written cache row behind.
+    """
+    from backend import config
+    from backend.services import store
+
+    monkeypatch.setattr(analyze_router.gmail_client, "get_email", lambda _id: fake_email())
+    settings = config.get_settings()
+    monkeypatch.setattr(settings, "nebius_api_key", "")
+    monkeypatch.setattr(settings, "nebius_model_fast", "nvidia/nemotron-test")
+
+    response = client.post("/analyze", json={"message_id": "msg-cache"})
+    assert response.status_code == 500
+    error = response.json()["error"]
+    assert error["code"] == "configuration_error"
+    assert error["details"]["env_var"] == "NEBIUS_API_KEY"
+    # The variable *name* is the useful part; its value must never appear, so
+    # `details` carries nothing else.
+    assert set(error["details"]) == {"env_var"}
+    assert store.cache_lookup("msg-cache") is None
+
+
+def test_unparseable_model_output_is_a_clean_502(
+    temp_db: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Task A10: a model that answers with prose instead of JSON."""
+    from backend.services import store
+
+    monkeypatch.setattr(analyze_router.gmail_client, "get_email", lambda _id: fake_email())
+
+    def unparseable(*_args, **_kwargs):
+        raise UpstreamError(
+            "The model did not return a JSON object",
+            details={"reason": "unparseable_output"},
+        )
+
+    monkeypatch.setattr(analyze_router.analyzer.nebius_client, "chat_json", unparseable)
+
+    response = client.post("/analyze", json={"message_id": "msg-cache"})
+    assert response.status_code == 502
+    assert response.json()["error"]["code"] == "upstream_error"
+    assert store.cache_lookup("msg-cache") is None

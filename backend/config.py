@@ -29,6 +29,9 @@ class Settings(BaseSettings):
     app_base_url: str = "http://localhost:8000"
     log_level: str = "INFO"
     cors_origins: str = "http://localhost:8501"
+    # Where the browser is sent after the OAuth callback. Without this the
+    # callback would strand the user on a JSON response from the API.
+    frontend_url: str = "http://localhost:8501"
     database_path: str = "data/inboxpilot.db"
 
     # --- Nebius Token Factory ---
