@@ -254,6 +254,15 @@ def _profile_email(credentials: Credentials) -> str | None:
 
 def _map_http_error(exc: HttpError, context: str) -> Exception:
     status = getattr(getattr(exc, "resp", None), "status", None)
+    if status == 400:
+        # Gmail answers 400 for a malformed message/thread id, which for a read
+        # means "no such email" — not "the server is broken".
+        if context in ("messages.get", "threads.get"):
+            return NotFound("The requested email does not exist.")
+        return UpstreamError(
+            "Gmail rejected the request parameters.",
+            details={"status": 400, "context": context},
+        )
     if status == 401:
         return AuthError("Gmail rejected the credential. Re-authorize the account.")
     if status == 404:
@@ -412,7 +421,9 @@ def to_detail(message: dict[str, Any]) -> EmailDetail:
 
 def list_emails(*, max_results: int | None = None, query: str | None = None) -> list[EmailSummaryItem]:
     settings = get_settings()
-    limit = max(1, min(max_results or 10, settings.max_emails_per_request))
+    # Explicit None check: `max_results or 10` would turn a request for 0 into 10.
+    requested = 10 if max_results is None else max_results
+    limit = max(1, min(requested, settings.max_emails_per_request))
     service = _service()
     try:
         response = (
