@@ -7,15 +7,34 @@ why they are separated from the API calls.
 from __future__ import annotations
 
 import base64
+import hashlib
+from urllib.parse import parse_qs, urlparse
 
 import pytest
 
 from backend.errors import ConfigError, NotImplementedYet
-from backend.services import gmail_client
+from backend.services import gmail_client, token_store
 
 
 def b64(text: str) -> str:
     return base64.urlsafe_b64encode(text.encode("utf-8")).decode("ascii").rstrip("=")
+
+
+@pytest.fixture
+def no_credentials(monkeypatch):
+    """Credential-free settings, so the suite never depends on a local .env."""
+    from backend.config import Settings
+
+    def fake_settings() -> Settings:
+        return Settings(
+            _env_file=None,
+            google_client_id="",
+            google_client_secret="",
+            demo_refresh_token="",
+        )
+
+    monkeypatch.setattr(gmail_client, "get_settings", fake_settings)
+    monkeypatch.setattr(token_store, "get_settings", fake_settings)
 
 
 def test_html_to_text_drops_script_and_style() -> None:
@@ -114,12 +133,38 @@ def test_draft_creation_is_not_silently_available() -> None:
         gmail_client.create_draft(to=["a@b.c"], subject="s", body="b")
 
 
-def test_oauth_requires_configuration() -> None:
+def test_oauth_requires_configuration(no_credentials) -> None:
     with pytest.raises(ConfigError):
         gmail_client.get_authorization_url()
 
 
-def test_auth_status_is_safe_without_credentials() -> None:
+def test_auth_status_is_safe_without_credentials(no_credentials) -> None:
     status = gmail_client.connection_status()
     assert status["connected"] is False
     assert "refresh_token" not in status
+
+
+def test_pkce_verifier_survives_until_exchange() -> None:
+    """Regression: the verifier used to be thrown away with the state.
+
+    google-auth-oauthlib autogenerates a PKCE verifier per Flow instance. The
+    authorization URL is built by one Flow and the token exchange by another, so
+    unless the verifier is persisted the exchange sends a mismatched verifier
+    and Google answers `invalid_grant` on every single attempt.
+    """
+    if not gmail_client.is_configured():
+        pytest.skip("Google OAuth client is not configured")
+
+    url = gmail_client.get_authorization_url()
+    params = parse_qs(urlparse(url).query)
+    state = params["state"][0]
+
+    verifier = gmail_client._PENDING_STATES[state]["code_verifier"]
+    expected = base64.urlsafe_b64encode(
+        hashlib.sha256(verifier.encode("ascii")).digest()
+    ).decode("ascii").rstrip("=")
+
+    assert params["code_challenge_method"][0] == "S256"
+    assert params["code_challenge"][0] == expected
+    # And it must still be there when the callback arrives.
+    assert gmail_client._consume_state(state)["code_verifier"] == verifier

@@ -12,6 +12,9 @@ data/
 *.db
 *.sqlite3
 
+# --- Local tooling / notes (never commit) ---
+.workbuddy-ai/
+
 # --- Python ---
 __pycache__/
 *.py[cod]

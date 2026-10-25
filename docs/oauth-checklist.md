@@ -24,20 +24,25 @@ long-lived token, and that has to be verified by 2026-10-28 at the latest.**
 
 ### 1. Project and API
 
-- [ ] Create a Google Cloud project for InboxPilot (not a personal project).
-- [ ] Enable **Gmail API**.
-- [ ] Set the OAuth consent screen: app name, support email, developer email.
-- [ ] Add scopes: `gmail.readonly` + `gmail.compose` only. Do not add
+- [x] Create a Google Cloud project for InboxPilot (not a personal project).
+- [x] Enable **Gmail API**.
+- [x] Set the OAuth consent screen: app name, support email, developer email.
+- [x] Add scopes: `gmail.readonly` + `gmail.compose` only. Do not add
       `gmail.modify`, `gmail.send`, `mail.google.com` or anything broader.
-- [ ] Create an OAuth Client ID of type **Web application**.
-- [ ] Register redirect URIs:
+- [x] Create an OAuth Client ID of type **Web application**.
+- [x] Register redirect URIs:
   - `http://localhost:8000/auth/google/callback` (local)
   - `https://<final-domain>/auth/google/callback` (add before Day 4 deploy)
 
+Verified 2026-10-24: client id ends in `.apps.googleusercontent.com`, the
+authorization URL carries exactly the two scopes above, and a real consent
+returned a refresh token that reads `users.getProfile` (974 messages).
+Note: the consent URL also carries PKCE `code_challenge` — see section 5.
+
 ### 2. Publishing status (the critical part)
 
-- [ ] Add the demo account as a test user while in Testing.
-- [ ] Run one successful authorization locally, confirm `messages.list` works.
+- [x] Add the demo account as a test user while in Testing.
+- [x] Run one successful authorization locally, confirm `messages.list` works.
 - [ ] Switch publishing status to **In production**.
 - [ ] Confirm what Google actually shows for this app in production while
       unverified (expected: "Google hasn't verified this app" warning, and a
@@ -46,6 +51,42 @@ long-lived token, and that has to be verified by 2026-10-28 at the latest.**
       A token issued while in Testing keeps the 7-day expiry.
 - [ ] Confirm the refresh token still works after 8+ days (put a reminder on
       2026-11-04; if it is dead, we have a problem to solve immediately).
+
+#### Where the "Publish app" button lives (console UI as of 2026-10)
+
+The old **"OAuth consent screen"** page has been folded into
+**Google Auth Platform**. Either path works depending on what the project shows:
+
+- New UI: `APIs & Services` → `Google Auth Platform` → **Audience**.
+  The page shows *Publishing status* and a **Publish app** button.
+- Old UI: `APIs & Services` → `OAuth consent screen`.
+  The page shows *Publishing status* with a **PUBLISH APP** button.
+
+Clicking it raises a "Push to production?" confirmation. Because
+`gmail.readonly` and `gmail.compose` are **restricted** scopes, the app stays
+*unverified* after publishing — that is expected and acceptable below 100 users.
+Users will see "Google hasn't verified this app" and must click
+*Advanced → Go to (unsafe)* to continue.
+
+Record below what actually happened, once done:
+
+- Publishing status now: _(pending)_
+- Warning shown to a new user: _(pending)_
+- Any user cap shown by the console: _(pending)_
+
+### 5. PKCE (found the hard way, 2026-10-24)
+
+`google-auth-oauthlib` 1.5 defaults to `autogenerate_code_verifier=True`. The
+authorization URL is built by one `Flow` and the code exchange by another, so
+the verifier must be persisted with the `state` or Google answers
+`invalid_grant` on every attempt. Fixed in `backend/services/gmail_client.py`
+(`_PENDING_STATES` now stores `{issued_at, code_verifier}`); regression test in
+`tests/test_gmail_parsing.py::test_pkce_verifier_survives_until_exchange`.
+
+Consequence for deployment: the pending-state store is in-memory, so the OAuth
+flow assumes a single process. The judge-facing path uses `DEMO_REFRESH_TOKEN`
+and never touches this flow, so this is acceptable for the hackathon.
+
 
 ### 3. Token storage
 

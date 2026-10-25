@@ -36,8 +36,19 @@ log = logging.getLogger(__name__)
 TOKEN_URI = "https://oauth2.googleapis.com/token"
 AUTH_URI = "https://accounts.google.com/o/oauth2/auth"
 
-# OAuth `state` values we have issued and not yet consumed.
-_PENDING_STATES: dict[str, float] = {}
+# In-flight OAuth attempts: state -> {"issued_at": float, "code_verifier": str}.
+#
+# The PKCE verifier MUST be stored with the state. google-auth-oauthlib 1.5
+# defaults to `autogenerate_code_verifier=True`, so every Flow instance gets a
+# fresh verifier. The authorization URL is built by one Flow and the token
+# exchange by another, so without this the exchange sends a verifier that does
+# not match the code_challenge and Google answers `invalid_grant` — every time,
+# not intermittently.
+#
+# In-memory is fine for the single-process local/dev flow. A deployment that
+# runs more than one worker would need this in shared storage; the judge-facing
+# demo does not use this flow at all (it uses DEMO_REFRESH_TOKEN).
+_PENDING_STATES: dict[str, dict[str, Any]] = {}
 _STATE_TTL_SECONDS = 600
 
 
@@ -76,16 +87,22 @@ def _build_flow(state: str | None = None):
         scopes=settings.google_scope_list,
         redirect_uri=settings.google_redirect_uri,
         state=state,
+        # Explicit, not inherited: the verifier is persisted by
+        # get_authorization_url and restored by exchange_code.
+        autogenerate_code_verifier=True,
     )
 
 
 def get_authorization_url() -> str:
     """Consent URL. `access_type=offline` + `prompt=consent` guarantee a refresh token."""
     state = secrets.token_urlsafe(24)
-    _PENDING_STATES[state] = time.time()
+
     # Drop expired states so the dict cannot grow without bound.
     now = time.time()
-    for stale in [s for s, ts in _PENDING_STATES.items() if now - ts > _STATE_TTL_SECONDS]:
+    for stale in [
+        s for s, rec in _PENDING_STATES.items()
+        if now - rec["issued_at"] > _STATE_TTL_SECONDS
+    ]:
         _PENDING_STATES.pop(stale, None)
 
     flow = _build_flow(state=state)
@@ -94,29 +111,50 @@ def get_authorization_url() -> str:
         prompt="consent",
         include_granted_scopes="true",
     )
+    # Keep the verifier that produced this URL's code_challenge.
+    _PENDING_STATES[state] = {"issued_at": now, "code_verifier": flow.code_verifier}
     return url
 
 
-def _consume_state(state: str | None) -> None:
+def _consume_state(state: str | None) -> dict[str, Any]:
     if not state:
         raise AuthError("Missing OAuth state. Start the flow again from /auth/google.")
-    issued_at = _PENDING_STATES.pop(state, None)
-    if issued_at is None:
+    record = _PENDING_STATES.pop(state, None)
+    if record is None:
         raise AuthError("Unknown OAuth state. Start the flow again from /auth/google.")
-    if time.time() - issued_at > _STATE_TTL_SECONDS:
+    if time.time() - record["issued_at"] > _STATE_TTL_SECONDS:
         raise AuthError("OAuth state expired. Start the flow again from /auth/google.")
+    return record
+
+
+def _oauth_error_text(exc: Exception) -> str:
+    """Secret-free description of an OAuth failure, safe to log and to return."""
+    parts = [
+        str(getattr(exc, "error", "") or ""),
+        str(getattr(exc, "description", "") or ""),
+        str(exc),
+    ]
+    return " | ".join(dict.fromkeys(p for p in parts if p))[:300]
 
 
 def exchange_code(code: str, state: str | None) -> dict:
     """Exchange the callback code for a refresh token and store it."""
-    _consume_state(state)
+    record = _consume_state(state)
     flow = _build_flow(state=state)
+    # Reuse the verifier behind this URL's code_challenge (PKCE).
+    flow.code_verifier = record.get("code_verifier")
     try:
         flow.fetch_token(code=code)
     except Exception as exc:  # noqa: BLE001 - oauthlib raises many types
+        detail = _oauth_error_text(exc)
+        log.warning(
+            "gmail.oauth_exchange_failed type=%s detail=%s",
+            type(exc).__name__,
+            detail,
+        )
         raise AuthError(
             "Google rejected the authorization code",
-            details={"reason": type(exc).__name__},
+            details={"reason": type(exc).__name__, "google": detail},
         ) from exc
 
     credentials = flow.credentials
