@@ -9,7 +9,7 @@ Two model roles (see hackathon Track 2 guidance):
 
 Base URL is `https://api.tokenfactory.nebius.com/v1/` per the official
 Token Factory quickstart. Model IDs drift as the catalogue changes, so always
-verify them with `python -m scripts.check_setup` instead of trusting this file.
+verify them with `python scripts/check_nebius.py` instead of trusting this file.
 """
 
 from __future__ import annotations
