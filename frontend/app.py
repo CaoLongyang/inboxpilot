@@ -201,6 +201,11 @@ _PALETTE = {
         "panel_bg": "rgba(139,148,158,.13)",
         "summary_bg": "rgba(88,166,255,.07)",
         "summary_bar": "#58a6ff",
+        # The selected nav pill is filled, so it needs a background that white
+        # text survives on. summary_bar (#58a6ff) is too pale for that in dark
+        # mode, where it is a light colour used for thin spines.
+        "nav_bg": "#1f6feb",
+        "nav_fg": "#ffffff",
         "task_bg": "rgba(210,153,34,.10)",
         "task_bar": "#d29922",
     },
@@ -216,6 +221,8 @@ _PALETTE = {
         "panel_bg": "rgba(87,96,106,.09)",
         "summary_bg": "rgba(9,105,218,.05)",
         "summary_bar": "#0969da",
+        "nav_bg": "#0969da",
+        "nav_fg": "#ffffff",
         "task_bg": "rgba(154,103,0,.08)",
         "task_bar": "#9a6700",
     },
@@ -227,7 +234,39 @@ def inject_css() -> None:
     st.markdown(
         f"""
 <style>
-  .block-container {{ padding-top: 2.0rem; padding-bottom: 3rem; max-width: 1200px; }}
+  .block-container {{ padding-top: 1.4rem; padding-bottom: 3rem; max-width: 1180px; }}
+  /* Streamlit's chrome bar is fixed and opaque, so it covered the top of the
+     first row: the brand came out sliced in half. There is no sidebar left to
+     toggle and the menu only holds "clear cache", so the bar earns nothing. */
+  header[data-testid="stHeader"] {{ display: none; }}
+  #MainMenu, footer {{ visibility: hidden; }}
+
+  /* --- top bar ------------------------------------------------------- */
+  .ip-brand {{ font-size: 1.5rem; font-weight: 800; letter-spacing: -0.02em;
+               line-height: 1.15; }}
+  .ip-brand span {{ display: block; font-size: 0.8rem; font-weight: 400;
+                    color: {p['muted']}; letter-spacing: 0; margin-top: 3px; }}
+  .ip-navrule {{ height: 1px; margin: 10px 0 22px 0;
+                 background: linear-gradient(90deg, {p['quote_bar']}, transparent); }}
+  /* The navigation is st.pills, which renders inside a stButtonGroup as
+     buttons carrying data-variant="pills"; the selected one is flagged with
+     data-selected="true" (and aria-checked). Streamlit's own selected state is
+     a 10% tint, which is too quiet to answer "which page am I on?" at a
+     glance, so it is filled here. Scoped by data-variant so that
+     st.segmented_control, which shares the container, is left alone. */
+  div[data-testid="stButtonGroup"] button[data-variant="pills"] {{
+      padding: 7px 18px; border-radius: 999px; font-size: 0.92rem;
+      font-weight: 600; }}
+  div[data-testid="stButtonGroup"] button[data-variant="pills"][data-selected="true"],
+  div[data-testid="stButtonGroup"] button[data-variant="pills"][aria-checked="true"] {{
+      background: {p['nav_bg']} !important;
+      border-color: {p['nav_bg']} !important; }}
+  div[data-testid="stButtonGroup"] button[data-variant="pills"][data-selected="true"] p,
+  div[data-testid="stButtonGroup"] button[data-variant="pills"][data-selected="true"] div,
+  div[data-testid="stButtonGroup"] button[data-variant="pills"][aria-checked="true"] p,
+  div[data-testid="stButtonGroup"] button[data-variant="pills"][aria-checked="true"] div {{
+      color: {p['nav_fg']} !important; }}
+
   .ip-subject {{ font-size: 0.98rem; font-weight: 600; line-height: 1.35; margin: 0 0 2px 0; }}
   .ip-meta {{ font-size: 0.78rem; color: {p['muted']}; margin: 0 0 6px 0; }}
   .ip-snippet {{ font-size: 0.86rem; color: {p['muted']}; line-height: 1.45;
@@ -591,9 +630,9 @@ def show_connection() -> None:
             "reading the inbox verifies access."
         )
         left, right = st.columns([1, 1])
-        if left.button("Open inbox", type="primary", use_container_width=True):
+        if left.button("Open inbox", type="primary", width="stretch"):
             go("Inbox")
-        if right.button("Disconnect stored credential", use_container_width=True):
+        if right.button("Disconnect stored credential", width="stretch"):
             try:
                 api_request("POST", "/auth/disconnect")
                 clear_email_results()
@@ -693,7 +732,7 @@ def _email_row(item: dict, analysis: dict | None) -> None:
             if st.button(
                 button_label, key=f"an_{message_id}",
                 type="primary" if not analysis else "secondary",
-                use_container_width=True,
+                width="stretch",
             ):
                 with st.spinner("Nemotron is reading this email..."):
                     ok, detail = _analyze(message_id)
@@ -789,7 +828,7 @@ def show_inbox() -> None:
             "How many", PAGE_SIZES, index=PAGE_SIZES.index(DEFAULT_PAGE_SIZE),
             format_func=lambda n: f"{n} emails", label_visibility="collapsed",
         )
-        load = load_col.button("Load inbox", type="primary", use_container_width=True)
+        load = load_col.button("Load inbox", type="primary", width="stretch")
 
     st.session_state.inbox_query = query
     if load or "email_list" not in st.session_state:
@@ -825,13 +864,13 @@ def show_inbox() -> None:
             unsafe_allow_html=True,
         )
     with batch_mid:
-        if st.button("Select all", use_container_width=True):
+        if st.button("Select all", width="stretch"):
             st.session_state["_select_all"] = True
             st.rerun()
     with batch_right:
         if st.button(
             f"Analyze selected ({len(selected)})",
-            type="primary", disabled=not selected, use_container_width=True,
+            type="primary", disabled=not selected, width="stretch",
         ):
             _analyze_many(selected)
 
@@ -920,7 +959,7 @@ def show_analysis() -> None:
     left, right = st.columns([1.4, 1])
     if left.button(
         "Re-analyze" if cached else "Analyze this email",
-        type="primary", use_container_width=True,
+        type="primary", width="stretch",
     ):
         with st.spinner("Nemotron is analyzing the email..."):
             ok, detail = _analyze(message_id)
@@ -928,7 +967,7 @@ def show_analysis() -> None:
             st.rerun()
         else:
             st.error(detail)
-    if right.button("Full email text", use_container_width=True):
+    if right.button("Full email text", width="stretch"):
         st.session_state.show_body = not st.session_state.get("show_body", False)
 
     if st.session_state.get("show_body"):
@@ -1072,9 +1111,9 @@ def import_section(saved_blocks: list[dict], imported: list[dict] | None) -> Non
             "Read this timetable",
             type="primary",
             disabled=upload is None,
-            use_container_width=True,
+            width="stretch",
         )
-        if imported and right.button("Discard import", use_container_width=True):
+        if imported and right.button("Discard import", width="stretch"):
             st.session_state.pop("imported_blocks", None)
             st.session_state.pop("import_skipped", None)
             _bump_week_version()
@@ -1162,7 +1201,7 @@ def show_schedule() -> None:
         edited = st.data_editor(
             frame,
             num_rows="dynamic",
-            use_container_width=True,
+            width="stretch",
             column_config={
                 "Day": st.column_config.SelectboxColumn("Day", options=WEEKDAYS, required=True),
                 "From": st.column_config.TextColumn("From (HH:MM)"),
@@ -1384,6 +1423,57 @@ def show_action_review() -> None:
 # --------------------------------------------------------------------------
 
 
+def top_bar() -> str:
+    """Brand, navigation and backend status, on one line above the content.
+
+    A sidebar costs a column of width on every screen and, in a five-page app,
+    buys nothing: the whole navigation fits on one line. Moving it up gives the
+    analysis the full width, which is where the content actually is.
+
+    Brand left, nav centre, status right — the arrangement every web app uses,
+    so a first-time visitor does not have to learn where anything is.
+    """
+    brand_col, nav_col, status_col = st.columns(
+        [3, 5, 2], vertical_alignment="center"
+    )
+    with brand_col:
+        st.markdown(
+            '<div class="ip-brand">InboxPilot'
+            '<span>From email information to real-world action</span></div>',
+            unsafe_allow_html=True,
+        )
+    with nav_col:
+        page = st.pills(
+            "Navigation", PAGES,
+            selection_mode="single",
+            key="nav_page",
+            label_visibility="collapsed",
+        )
+    with status_col:
+        health = _health_snapshot()
+        if health["ok"]:
+            data = health["data"]
+            st.markdown(
+                badge("backend online", "green")
+                + (" " + badge("config ok", "green")
+                   if data.get("status") == "ok" else " " + badge("needs config", "amber")),
+                unsafe_allow_html=True,
+            )
+        else:
+            st.markdown(badge("backend offline", "red"), unsafe_allow_html=True)
+            if st.button("Recheck", key="recheck"):
+                forget_status_cache()
+                st.rerun()
+
+    st.markdown('<div class="ip-navrule"></div>', unsafe_allow_html=True)
+    if page:
+        st.session_state["nav_last"] = page
+        return page
+    # Single-select pills can be clicked off, which would leave the page blank.
+    # Fall back to the last page the user actually chose.
+    return st.session_state.get("nav_last") or "Connect"
+
+
 def main() -> None:
     st.set_page_config(page_title="InboxPilot", page_icon="📥", layout="wide")
     inject_css()
@@ -1395,27 +1485,7 @@ def main() -> None:
     if requested in PAGES:
         st.session_state.nav_page = requested
 
-    with st.sidebar:
-        st.markdown("## InboxPilot")
-        st.caption("From email information to real-world action.")
-        page = st.radio("Navigation", PAGES, key="nav_page", label_visibility="collapsed")
-        st.divider()
-        health = _health_snapshot()
-        if health["ok"]:
-            data = health["data"]
-            st.markdown(badge("backend online", "green"), unsafe_allow_html=True)
-            st.caption(f"env: {data.get('env', '?')} · config: {data.get('status', '?')}")
-            if data.get("status") != "ok":
-                st.warning("Some integrations need configuration.")
-        else:
-            st.markdown(badge("backend offline", "red"), unsafe_allow_html=True)
-            st.caption(health["error"])
-        if st.button("Recheck", use_container_width=True):
-            forget_status_cache()
-            st.rerun()
-        st.divider()
-        analyses = st.session_state.get("analyses", {})
-        st.caption(f"analyzed this session: {len(analyses)}")
+    page = top_bar()
 
     if page == "Connect":
         show_connection()

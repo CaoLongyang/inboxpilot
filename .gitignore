@@ -42,6 +42,8 @@ Thumbs.db
 logs/
 *.log
 scratch/
+tmp/
+node_modules/
 
 # --- Internal planning docs (not part of the public submission) ---
 docs/internal/

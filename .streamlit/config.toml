@@ -1,0 +1,35 @@
+# InboxPilot theme.
+#
+# Why this file exists: with no theme set, Streamlit's default primary colour is
+# red, so every primary button, slider and selected pill came out red while the
+# analysis cards used a blue accent. Two unrelated accents on one screen is what
+# makes an app read as "assembled" rather than designed. Setting the primary
+# colour here fixes all of those widgets at once instead of overriding each one
+# with !important in the app's CSS.
+#
+# The values match the light/dark palettes in frontend/app.py (_PALETTE) so the
+# chrome and the custom cards agree.
+
+[theme]
+
+base = "light"
+
+[theme.light]
+
+primaryColor = "#0969da"
+backgroundColor = "#ffffff"
+secondaryBackgroundColor = "#f6f8fa"
+textColor = "#1f2328"
+
+[theme.dark]
+
+primaryColor = "#58a6ff"
+backgroundColor = "#0d1117"
+secondaryBackgroundColor = "#161b22"
+textColor = "#e6edf3"
+
+[browser]
+
+# No telemetry: this app reads a real mailbox, and a submission that phones home
+# from a privacy tool is a bad look.
+gatherUsageStats = false
