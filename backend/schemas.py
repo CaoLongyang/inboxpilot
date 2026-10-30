@@ -226,6 +226,52 @@ class CachedAnalysis(APIModel):
     cached: bool = False
 
 
+# --------------------------------------------------------------------------
+# Weekly digest
+# --------------------------------------------------------------------------
+
+
+class DigestDeadline(APIModel):
+    """One thing that is due, with the email it came from."""
+
+    date: Date
+    what: str = Field(min_length=1, max_length=200)
+    source: str = Field(default="", max_length=200)
+
+
+class WeeklyDigest(APIModel):
+    """One week of mail, reduced to what the reader has to know.
+
+    The counts are not decoration: they are how the reader judges whether to
+    trust the digest. "Twelve of these were read in full, forty were only a
+    subject line" is the difference between a summary and a guess.
+    """
+
+    headline: str = Field(min_length=1, max_length=300)
+    deadlines: list[DigestDeadline] = Field(default_factory=list)
+    needs_you: list[str] = Field(default_factory=list)
+    ignored: str = ""
+    quiet: bool = False
+    days: int = 7
+    covered: int = 0
+    analysed: int = 0
+    metadata_only: int = 0
+    model: str = ""
+    generated_at: datetime = Field(default_factory=now_utc)
+
+
+class DigestResponse(APIModel):
+    """A digest, or the absence of one.
+
+    Absence is a normal answer: the page asks on open and "not generated yet"
+    must not cost a model call, so a missing digest is reported as `digest:
+    null` rather than turned into a 404 the UI has to interpret.
+    """
+
+    digest: WeeklyDigest | None = None
+    cached: bool = False
+
+
 class PlanRequest(APIModel):
     message_id: str
 

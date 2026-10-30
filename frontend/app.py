@@ -36,7 +36,11 @@ import streamlit as st
 
 
 API_BASE = os.getenv("INBOXPILOT_API_URL", "http://localhost:8000").rstrip("/")
-PAGES = ["Connect", "Inbox", "Analysis", "My week", "Action Review"]
+PAGES = ["Connect", "Inbox", "Digest", "Analysis", "My week", "Action Review"]
+
+# "My week" is the timetable. The digest is the other direction — what the week
+# of mail asked for — so the two must not share a name.
+DIGEST_WINDOWS = [7, 14, 30]
 PAGE_SIZES = [10, 20, 30]
 DEFAULT_PAGE_SIZE = 10
 WEEKDAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
@@ -255,7 +259,7 @@ def inject_css() -> None:
      glance, so it is filled here. Scoped by data-variant so that
      st.segmented_control, which shares the container, is left alone. */
   div[data-testid="stButtonGroup"] button[data-variant="pills"] {{
-      padding: 7px 18px; border-radius: 999px; font-size: 0.92rem;
+      padding: 6px 14px; border-radius: 999px; font-size: 0.9rem;
       font-weight: 600; }}
   div[data-testid="stButtonGroup"] button[data-variant="pills"][data-selected="true"],
   div[data-testid="stButtonGroup"] button[data-variant="pills"][aria-checked="true"] {{
@@ -277,6 +281,15 @@ def inject_css() -> None:
                font-size: 0.8rem; font-weight: 600; letter-spacing: .02em;
                border: 1px solid transparent; white-space: nowrap; }}
   .ip-badge-lg {{ font-size: 0.95rem; font-weight: 700; padding: 5px 16px; }}
+  /* Digest deadlines: date first and fixed width, so the eye scans a column of
+     dates rather than reading each row. */
+  .ip-due {{ display: flex; align-items: baseline; gap: 14px;
+             padding: 7px 12px; border-radius: 6px; margin: 0 0 4px 0;
+             background: {p['task_bg']}; border-left: 3px solid {p['task_bar']}; }}
+  .ip-due-when {{ font-variant-numeric: tabular-nums; font-weight: 700;
+                  font-size: 0.92rem; color: {p['task_bar']}; white-space: nowrap; }}
+  .ip-due-what {{ font-size: 1.0rem; font-weight: 600; flex: 1; }}
+  .ip-due-src {{ font-size: 0.8rem; color: {p['muted']}; }}
   .ip-quote {{ font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
                font-size: 0.85rem; line-height: 1.55; white-space: pre-wrap;
                background: {p['quote_bg']}; border-left: 3px solid {p['quote_bar']};
@@ -1321,6 +1334,111 @@ def show_schedule() -> None:
 
 
 # --------------------------------------------------------------------------
+# Digest — a week of mail, reduced to one answer
+# --------------------------------------------------------------------------
+
+
+def _deadline_row(entry: dict) -> str:
+    source = esc(entry.get("source") or "")
+    return (
+        f'<div class="ip-due">'
+        f'<span class="ip-due-when">{esc(entry.get("date") or "")}</span>'
+        f'<span class="ip-due-what">{esc(entry.get("what") or "")}</span>'
+        + (f'<span class="ip-due-src">{source}</span>' if source else "")
+        + "</div>"
+    )
+
+
+def show_digest() -> None:
+    st.markdown("### Digest")
+    st.caption(
+        "One week of mail, reduced to what you have to know. Built from the "
+        "analyses that already exist; messages without one contribute only their "
+        "subject line, which is why the counts at the bottom are shown."
+    )
+
+    left, right = st.columns([1.6, 1])
+    days = left.selectbox(
+        "Window", DIGEST_WINDOWS, index=0,
+        format_func=lambda value: f"Last {value} days",
+        label_visibility="collapsed",
+    )
+
+    key = f"digest_{days}"
+    if key not in st.session_state:
+        # Reading the cache is free, so the page can ask on every open. It never
+        # generates: that would make navigating here cost a model call.
+        try:
+            payload = api_request("GET", "/digest", params={"days": days}, timeout=20.0)
+            st.session_state[key] = payload.get("digest")
+        except APIError as exc:
+            error_message(exc)
+            st.session_state[key] = None
+
+    digest = st.session_state.get(key)
+
+    if right.button(
+        "Regenerate" if digest else "Summarise this week",
+        type="primary", width="stretch",
+    ):
+        with st.spinner("Reading the week and writing the digest..."):
+            try:
+                payload = api_request(
+                    "GET", "/digest",
+                    params={"days": days, "refresh": True},
+                    timeout=180.0,
+                )
+                st.session_state[key] = payload.get("digest")
+                st.rerun()
+            except APIError as exc:
+                error_message(exc)
+
+    if not digest:
+        st.info(
+            "No digest for this window yet. It costs one model call over the "
+            "whole week, which is why it is a button and not automatic."
+        )
+        return
+
+    st.markdown(
+        label("The week in one line") + summary_block(digest.get("headline", "")),
+        unsafe_allow_html=True,
+    )
+
+    deadlines = digest.get("deadlines") or []
+    if deadlines:
+        st.markdown(label("Due", "amber"), unsafe_allow_html=True)
+        st.markdown(
+            "".join(_deadline_row(entry) for entry in deadlines),
+            unsafe_allow_html=True,
+        )
+
+    needs = digest.get("needs_you") or []
+    if needs:
+        st.markdown(label("Needs you", "amber"), unsafe_allow_html=True)
+        st.markdown(
+            "".join(task_block({"title": item}) for item in needs),
+            unsafe_allow_html=True,
+        )
+
+    if digest.get("quiet"):
+        st.success("Nothing needed action this week.")
+
+    ignored = (digest.get("ignored") or "").strip()
+    if ignored:
+        st.markdown(label("Can be ignored") + f'<div class="ip-fact">{esc(ignored)}</div>',
+                    unsafe_allow_html=True)
+
+    st.caption(
+        f"{digest.get('covered', 0)} conversations · "
+        f"{digest.get('analysed', 0)} read in full · "
+        f"{digest.get('metadata_only', 0)} subject line only · "
+        f"{esc(digest.get('model') or 'unknown model')} · "
+        f"{esc((digest.get('generated_at') or '')[:19].replace('T', ' '))}"
+    )
+
+
+# --------------------------------------------------------------------------
 # Action Review — the approval gate
 # --------------------------------------------------------------------------
 
@@ -1462,7 +1580,7 @@ def top_bar() -> str:
     so a first-time visitor does not have to learn where anything is.
     """
     brand_col, nav_col, status_col = st.columns(
-        [3, 5, 2], vertical_alignment="center"
+        [2.6, 5.4, 2.0], vertical_alignment="center"
     )
     with brand_col:
         st.markdown(
@@ -1519,6 +1637,8 @@ def main() -> None:
         show_connection()
     elif page == "Inbox":
         show_inbox()
+    elif page == "Digest":
+        show_digest()
     elif page == "Analysis":
         show_analysis()
     elif page == "My week":

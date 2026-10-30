@@ -420,23 +420,14 @@ def to_detail(message: dict[str, Any]) -> EmailDetail:
 # --------------------------------------------------------------------------
 
 
-def list_emails(*, max_results: int | None = None, query: str | None = None) -> list[EmailSummaryItem]:
-    settings = get_settings()
-    # Explicit None check: `max_results or 10` would turn a request for 0 into 10.
-    requested = 10 if max_results is None else max_results
-    limit = max(1, min(requested, settings.max_emails_per_request))
-    service = _service()
-    try:
-        response = (
-            service.users()
-            .messages()
-            .list(userId="me", maxResults=limit, q=query)
-            .execute()
-        )
-    except HttpError as exc:
-        raise _map_http_error(exc, "messages.list") from exc
+def _fetch_summaries(ids: list[str]) -> list[EmailSummaryItem]:
+    """Metadata for each id, skipping the ones that cannot be read.
 
-    ids = [m["id"] for m in response.get("messages", []) or []]
+    One `messages.get` per id, because `messages.list` returns ids only. The
+    cost is why the API-facing callers stay capped at ten; the weekly digest
+    pages instead of raising this limit.
+    """
+    service = _service()
     emails: list[EmailSummaryItem] = []
     for message_id in ids:
         try:
@@ -458,6 +449,66 @@ def list_emails(*, max_results: int | None = None, query: str | None = None) -> 
             continue
         emails.append(to_summary(message))
     return emails
+
+
+def list_emails(*, max_results: int | None = None, query: str | None = None) -> list[EmailSummaryItem]:
+    settings = get_settings()
+    # Explicit None check: `max_results or 10` would turn a request for 0 into 10.
+    requested = 10 if max_results is None else max_results
+    limit = max(1, min(requested, settings.max_emails_per_request))
+    service = _service()
+    try:
+        response = (
+            service.users()
+            .messages()
+            .list(userId="me", maxResults=limit, q=query)
+            .execute()
+        )
+    except HttpError as exc:
+        raise _map_http_error(exc, "messages.list") from exc
+
+    ids = [m["id"] for m in response.get("messages", []) or []]
+    return _fetch_summaries(ids)
+
+
+def list_emails_up_to(query: str, total: int) -> list[EmailSummaryItem]:
+    """Read a large window of the inbox, following page tokens.
+
+    The weekly digest needs a week, which is routinely more than the ten the
+    inbox page shows and more than `max_emails_per_request` allows. Rather than
+    raise that cap for everyone — it exists to stop a single HTTP request from
+    triggering hundreds of Gmail calls — this pages internally and is only
+    reachable from server-side code.
+
+    `total` is a hard ceiling, not a promise: a quiet week returns fewer.
+    """
+    if total <= 0:
+        return []
+    service = _service()
+    ids: list[str] = []
+    page_token: str | None = None
+    while len(ids) < total:
+        try:
+            response = (
+                service.users()
+                .messages()
+                .list(
+                    userId="me",
+                    # Gmail accepts up to 500; 100 keeps a page small enough to
+                    # stay well inside the default request timeout.
+                    maxResults=min(100, total - len(ids)),
+                    q=query,
+                    pageToken=page_token,
+                )
+                .execute()
+            )
+        except HttpError as exc:
+            raise _map_http_error(exc, "messages.list") from exc
+        ids.extend(m["id"] for m in response.get("messages", []) or [])
+        page_token = response.get("nextPageToken")
+        if not page_token:
+            break
+    return _fetch_summaries(ids[:total])
 
 
 def get_email(message_id: str) -> EmailDetail:

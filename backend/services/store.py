@@ -49,6 +49,7 @@ from backend.schemas import (
     ModelUsage,
     ProposedAction,
     ScheduleProfile,
+    WeeklyDigest,
 )
 
 log = logging.getLogger(__name__)
@@ -125,6 +126,15 @@ CREATE TABLE IF NOT EXISTS watcher_seen (
 -- the watcher on an inbox with 20 unread messages would fire 20 cards, and an
 -- empty inbox would make the next arrival look like a baseline.
 CREATE TABLE IF NOT EXISTS watcher_state (
+    id         TEXT PRIMARY KEY,
+    payload    TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+-- One row per digest window, so re-opening the page does not re-run the model.
+-- The key is "last N days", which means the digest is stale the moment a new
+-- email arrives; that is accepted, and "Regenerate" is one click.
+CREATE TABLE IF NOT EXISTS weekly_digest (
     id         TEXT PRIMARY KEY,
     payload    TEXT NOT NULL,
     updated_at TEXT NOT NULL
@@ -681,6 +691,54 @@ def forget_seen() -> int:
 
 
 # --------------------------------------------------------------------------
+# Weekly digest
+# --------------------------------------------------------------------------
+
+
+def digest_key(days: int) -> str:
+    """One digest per window size. Not per calendar week, on purpose.
+
+    A calendar week would go stale at midnight on Monday and silently show last
+    week's answer. "The last 7 days" is what the button says, and it is what
+    gets cached.
+    """
+    return f"last-{days}-days"
+
+
+def load_digest(days: int) -> WeeklyDigest | None:
+    """Return a stored digest, or None. Never raises."""
+    try:
+        with _connect() as conn:
+            row = conn.execute(
+                "SELECT payload FROM weekly_digest WHERE id = ?", (digest_key(days),)
+            ).fetchone()
+    except sqlite3.Error as exc:
+        log.warning("store.digest_read_failed type=%s", type(exc).__name__)
+        return None
+    if row is None:
+        return None
+    try:
+        return WeeklyDigest.model_validate_json(row["payload"])
+    except ValidationError as exc:
+        log.warning("store.digest_corrupt type=%s", type(exc).__name__)
+        return None
+
+
+def save_digest(digest: WeeklyDigest) -> None:
+    """Persist a digest. Best effort: failing to cache is not failing to answer."""
+    try:
+        with _connect() as conn:
+            conn.execute(
+                "INSERT INTO weekly_digest (id, payload, updated_at) VALUES (?, ?, ?) "
+                "ON CONFLICT(id) DO UPDATE SET payload = excluded.payload, "
+                "updated_at = excluded.updated_at",
+                (digest_key(digest.days), _dumps(digest), _utcnow()),
+            )
+    except sqlite3.Error as exc:
+        log.warning("store.digest_write_failed type=%s", type(exc).__name__)
+
+
+# --------------------------------------------------------------------------
 # Introspection (used by scripts/check_store.py and debugging)
 # --------------------------------------------------------------------------
 
@@ -692,7 +750,7 @@ def stats() -> dict[str, int]:
             table: conn.execute(f"SELECT COUNT(*) AS n FROM {table}").fetchone()["n"]
             for table in (
                 "analysis_results", "action_proposals", "execution_logs",
-                "schedule_profile", "watcher_seen",
+                "schedule_profile", "watcher_seen", "weekly_digest",
             )
         }
 
@@ -703,15 +761,18 @@ __all__ = [
     "cache_lookup",
     "cache_store",
     "db_path",
+    "digest_key",
     "find_execution_by_key",
     "forget_seen",
     "get_execution",
     "get_proposal",
     "init_db",
+    "load_digest",
     "load_schedule",
     "mark_baselined",
     "mark_seen",
     "record_execution",
+    "save_digest",
     "save_proposal",
     "save_schedule",
     "seen_ids",

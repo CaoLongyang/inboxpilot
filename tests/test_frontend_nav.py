@@ -16,12 +16,13 @@ from streamlit.testing.v1 import AppTest
 
 APP = Path(__file__).resolve().parents[1] / "frontend" / "app.py"
 
-PAGES = ["Connect", "Inbox", "Analysis", "My week", "Action Review"]
+PAGES = ["Connect", "Inbox", "Digest", "Analysis", "My week", "Action Review"]
 
 # The heading each page renders once it is the current page.
 HEADINGS = {
     "Connect": "### Connect Gmail",
     "Inbox": "### Inbox",
+    "Digest": "### Digest",
     "Analysis": "### Analysis",
     "My week": "### My week",
     "Action Review": "### Review and approve",
