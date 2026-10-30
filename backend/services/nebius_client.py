@@ -85,6 +85,7 @@ def chat(
     temperature: float = 0.0,
     max_tokens: int = 2000,
     thinking: bool | None = None,
+    response_format: dict | None = None,
 ) -> tuple[str, ModelUsage]:
     """One chat completion. Returns (text, usage)."""
     settings = get_settings()
@@ -104,6 +105,8 @@ def chat(
         "temperature": temperature,
         "max_tokens": max_tokens,
     }
+    if response_format is not None:
+        request["response_format"] = response_format
     if not use_thinking:
         # vLLM reads this out of the request body; the OpenAI SDK needs
         # `extra_body` to forward keys it does not know about.
@@ -230,6 +233,7 @@ def chat_json(
             temperature=0.0,
             max_tokens=max_tokens,
             thinking=thinking,
+            response_format={"type": "json_object"},
         )
     except UpstreamError as exc:
         if exc.details.get("reason") != "output_truncated":
@@ -244,6 +248,7 @@ def chat_json(
             temperature=0.0,
             max_tokens=max_tokens * 2,
             thinking=thinking,
+            response_format={"type": "json_object"},
         )
     return parse_json_object(text), usage
 
