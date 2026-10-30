@@ -11,7 +11,7 @@ Built for the **Nebius x NVIDIA Global AI Hackathon**, Track 2: *Best Apps and
 Agents*.
 
 > Status: the full loop runs end to end on a real mailbox — real Gmail in, real
-> Nemotron analysis out, real Gmail draft created and read back. 182 tests.
+> Nemotron analysis out, real Gmail draft created and read back. 292 tests.
 > Nothing in this repository sends email, and no write can happen without
 > explicit user approval.
 
@@ -110,6 +110,47 @@ without one, but it requires the full-mailbox `https://mail.google.com/` scope �
 an enormous privacy downgrade for a few seconds of latency. One request a
 minute costs about 0.6% of the daily Gmail quota.
 
+### One week, one page
+
+The watcher handles *this email*. The **Digest** page answers the other question:
+*what did the last seven days actually ask of me?* It is one model call over the
+whole window, cached in SQLite, and it costs nothing to look at again.
+
+The naive implementation reads every message in full — a hundred thousand tokens
+and a hundred inference calls for a normal week. So the input is built from two
+tiers of evidence. Messages that already have an analysis contribute their
+summary, tasks and resolved deadlines, which the watcher already paid for.
+Everything else contributes only the sender, subject and date that
+`messages.list` returned anyway. The page prints how many messages landed in
+each tier, because "three of these I actually read, one was only a subject line"
+is the difference between a summary and a guess.
+
+The hard part was not summarising. It was the padding. Asked to pick out what
+needed attention, the model wrote plausible advice — *"Confirm presentation
+readiness"*, *"Modify InboxPilot's data access permissions"* — none of which
+appeared in any email. Rewriting the prompt did not stop it; the model is simply
+very good at sounding like a helpful assistant. So it no longer writes task text
+at all:
+
+```
+Python: candidates() -> numbered list of tasks already extracted this week
+model : needs_you -> [3, 1]      (ids into that list)
+Python: _resolve_task() -> titles, or nothing
+```
+
+Invention is now structurally impossible rather than discouraged. An id that
+does not resolve is dropped, and an empty list is an accepted answer — the
+digest is allowed to say the week was quiet, and `quiet` is computed from what
+survived validation rather than read from the model's own flag. Otherwise a week
+could be declared quiet after three invented tasks.
+
+Two more choices worth naming. A missing digest returns `digest: null`, not a
+404, and generating is a separate explicit act from reading: the page calls
+`GET /digest` on every open, and if that quietly ran the model, navigating here
+would cost money. And the cache key is *"the last N days"*, not a calendar week,
+because a calendar week goes stale at midnight on Monday and would silently show
+last week's answer under this week's heading.
+
 ## Architecture
 
 ```
@@ -133,7 +174,7 @@ backend/
   config.py            all environment variables, one place
   schemas.py           API contract (single source of truth)
   errors.py            unified error model
-  routers/             health, auth, emails, analyze, actions
+  routers/             health, auth, emails, analyze, actions, digest
   services/
     nebius_client.py   Token Factory client, thinking on/off, JSON mode
     analyzer.py        email -> structured analysis, quote verification
@@ -145,10 +186,11 @@ backend/
     timetable.py       photo of a timetable -> busy blocks
     watcher.py         background poll: filter, analyse, decide, announce
     notify.py          desktop cards (Tk), console fallback
+    digest.py          a week of mail -> one page, no invented tasks
     store.py           SQLite: analyses, proposals, execution log, seen mail
     token_store.py     one place that knows where the refresh token lives
 frontend/
-  app.py               Streamlit UI (inbox list, analysis, approval)
+  app.py               Streamlit UI (inbox list, analysis, digest, approval)
 scripts/
   serve.py             run the API (--watch adds the mail watcher)
   watch.py             run the watcher on its own
@@ -157,7 +199,7 @@ scripts/
   bench_models.py      model comparison behind the README table
   analyze_one.py       analyze one real email from the CLI
   approve_one.py       drive the full approve -> draft -> verify path
-tests/                 272 contract, gate and reliability tests
+tests/                 292 contract, gate and reliability tests
 docs/
   oauth-checklist.md   Day 1 Gmail OAuth steps + the refresh-token trap
   DEPLOY.md            hosting options, env vars, and why Pages cannot
