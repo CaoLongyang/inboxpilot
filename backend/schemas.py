@@ -244,6 +244,111 @@ class ExecutionResult(APIModel):
 
 
 # --------------------------------------------------------------------------
+# The user's own timetable, and whether an invitation fits it (FR-09)
+# --------------------------------------------------------------------------
+
+
+class BusyBlock(APIModel):
+    """A recurring weekly commitment: a lecture, a shift, a standing meeting.
+
+    Deliberately recurring and weekly rather than a calendar import. The point
+    is that the user can answer "when are you normally busy?" in thirty
+    seconds, without handing over a Google Calendar scope we do not need.
+    """
+
+    weekday: int = Field(ge=0, le=6, description="0 = Monday, 6 = Sunday")
+    start: str = Field(pattern=r"^([01]\d|2[0-3]):[0-5]\d$", description="HH:MM")
+    end: str = Field(pattern=r"^([01]\d|2[0-3]):[0-5]\d$", description="HH:MM")
+    label: str = ""
+
+    @model_validator(mode="after")
+    def _ends_after_start(self):
+        # Overnight blocks (22:00-02:00) are rejected rather than silently
+        # misread: a wrong answer about a clash is worse than "please split it".
+        if self.end <= self.start:
+            raise ValueError("end must be later than start; split overnight blocks in two")
+        return self
+
+
+class ScheduleProfile(APIModel):
+    """What the user tells us about their own week."""
+
+    role: Literal["student", "worker", "other"] = "student"
+    timezone: str = "Asia/Shanghai"
+    busy_blocks: list[BusyBlock] = Field(default_factory=list)
+    notes: str = Field(
+        default="",
+        description="Free text, e.g. 'only paid AI hackathons matter to me'",
+    )
+    value_threshold: int = Field(
+        default=4,
+        ge=1,
+        le=5,
+        description="How good an event must be (1-5) to be worth a timetable clash",
+    )
+    configured: bool = Field(
+        default=False, description="Derived: has the user actually told us anything?"
+    )
+
+
+class EventWindow(APIModel):
+    """When the thing in the email happens, in the user's local time."""
+
+    name: str = ""
+    start: datetime | None = None
+    end: datetime | None = None
+    commitment_hours: float | None = None
+    location: str = ""
+    precision: Literal["exact", "date_only", "unknown"] = "unknown"
+
+
+class Conflict(APIModel):
+    """One concrete clash between the event and a busy block."""
+
+    busy_label: str = ""
+    weekday: int = Field(ge=0, le=6)
+    on_date: Date
+    start: datetime
+    end: datetime
+
+
+class ValueAssessment(APIModel):
+    score: int = Field(ge=1, le=5)
+    reasons: list[str] = Field(default_factory=list)
+
+
+class TriageVerdict(str, Enum):
+    """What to do about an invitation, once the timetable has been consulted."""
+
+    ATTEND = "attend"                                # free, worth it
+    ATTEND_DESPITE_CONFLICT = "attend_despite_conflict"  # clashes, still worth it
+    DECLINE_CONFLICT = "decline_conflict"            # clashes, not worth it
+    SKIP_NOT_WORTH_IT = "skip_not_worth_it"          # free, but not worth the time
+    UNKNOWN_TIMING = "unknown_timing"                # email does not say when
+    NOT_AN_EVENT = "not_an_event"                    # nothing to attend
+    NO_SCHEDULE = "no_schedule"                      # we must ask the user first
+
+
+class OpportunityAssessment(APIModel):
+    """The answer to "should I do this?", with the evidence for it."""
+
+    message_id: str
+    verdict: TriageVerdict
+    headline: str = Field(default="", description="One imperative line for the UI")
+    is_opportunity: bool = False
+    event: EventWindow | None = None
+    value: ValueAssessment | None = None
+    conflicts: list[Conflict] = Field(default_factory=list)
+    reasoning: str = ""
+    missing: list[str] = Field(default_factory=list)
+    usage: ModelUsage | None = None
+
+
+class OpportunityRequest(APIModel):
+    message_id: str = Field(min_length=1)
+
+
+# --------------------------------------------------------------------------
 # Infrastructure
 # --------------------------------------------------------------------------
 

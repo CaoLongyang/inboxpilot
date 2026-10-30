@@ -41,13 +41,14 @@ from typing import Iterator
 from pydantic import ValidationError
 
 from backend.config import get_settings
-from backend.errors import DuplicateRequest
+from backend.errors import DuplicateRequest, StorageError
 from backend.schemas import (
     EmailAnalysis,
     ExecutionResult,
     ExecutionStatus,
     ModelUsage,
     ProposedAction,
+    ScheduleProfile,
 )
 
 log = logging.getLogger(__name__)
@@ -102,6 +103,14 @@ CREATE TABLE IF NOT EXISTS execution_logs (
 
 CREATE INDEX IF NOT EXISTS idx_executions_action
     ON execution_logs (action_id);
+
+-- One row, id = 'default'. A single-user demo does not need accounts, and the
+-- schedule is the only state the user owns rather than the agent.
+CREATE TABLE IF NOT EXISTS schedule_profile (
+    id         TEXT PRIMARY KEY,
+    payload    TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
 """
 
 _init_lock = threading.Lock()
@@ -489,6 +498,72 @@ def find_execution_by_key(idempotency_key: str) -> ExecutionResult | None:
 
 
 # --------------------------------------------------------------------------
+# The user's weekly schedule (FR-09)
+# --------------------------------------------------------------------------
+
+SCHEDULE_ID = "default"
+
+
+def load_schedule() -> ScheduleProfile:
+    """Return the saved schedule, or an empty one.
+
+    A missing row is normal (first run) and a broken database is not the user's
+    problem here: both produce an unconfigured profile, and the UI then asks
+    for the timetable instead of guessing. Nothing is written back.
+    """
+    try:
+        with _connect() as conn:
+            row = conn.execute(
+                "SELECT payload FROM schedule_profile WHERE id = ?", (SCHEDULE_ID,)
+            ).fetchone()
+    except sqlite3.Error as exc:
+        log.warning("store.schedule_read_failed type=%s", type(exc).__name__)
+        return ScheduleProfile()
+    if row is None:
+        return ScheduleProfile()
+    try:
+        profile = ScheduleProfile.model_validate_json(row["payload"])
+    except ValidationError as exc:
+        log.warning("store.schedule_corrupt type=%s", type(exc).__name__)
+        return ScheduleProfile()
+    return profile.model_copy(update={"configured": _is_configured(profile)})
+
+
+def save_schedule(profile: ScheduleProfile) -> ScheduleProfile:
+    """Persist the schedule. Raises when it cannot be saved.
+
+    Unlike the analysis cache, a silent failure here would tell the user their
+    timetable is in effect when it is not, and every later verdict would be
+    computed against nothing.
+    """
+    payload = profile.model_copy(update={"configured": _is_configured(profile)})
+    try:
+        with _connect() as conn:
+            conn.execute(
+                "INSERT INTO schedule_profile (id, payload, updated_at) VALUES (?, ?, ?) "
+                "ON CONFLICT(id) DO UPDATE SET payload = excluded.payload, "
+                "updated_at = excluded.updated_at",
+                (SCHEDULE_ID, _dumps(payload), _utcnow()),
+            )
+    except sqlite3.Error as exc:
+        raise StorageError("The schedule could not be saved") from exc
+    log.info(
+        "store.schedule_saved blocks=%d notes=%d threshold=%d",
+        len(payload.busy_blocks), len(payload.notes), payload.value_threshold,
+    )
+    return payload
+
+
+def _is_configured(profile: ScheduleProfile) -> bool:
+    """Enough information to say something useful about a clash.
+
+    Notes alone are not enough: "only paid hackathons" does not tell us when
+    the user is in class, so a conflict question would still be unanswerable.
+    """
+    return bool(profile.busy_blocks)
+
+
+# --------------------------------------------------------------------------
 # Introspection (used by scripts/check_store.py and debugging)
 # --------------------------------------------------------------------------
 
@@ -498,7 +573,10 @@ def stats() -> dict[str, int]:
     with _connect() as conn:
         return {
             table: conn.execute(f"SELECT COUNT(*) AS n FROM {table}").fetchone()["n"]
-            for table in ("analysis_results", "action_proposals", "execution_logs")
+            for table in (
+                "analysis_results", "action_proposals", "execution_logs",
+                "schedule_profile",
+            )
         }
 
 
@@ -512,8 +590,10 @@ __all__ = [
     "get_execution",
     "get_proposal",
     "init_db",
+    "load_schedule",
     "record_execution",
     "save_proposal",
+    "save_schedule",
     "set_proposal_status",
     "stats",
     "try_init_db",

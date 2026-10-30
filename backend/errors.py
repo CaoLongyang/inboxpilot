@@ -67,3 +67,14 @@ class UpstreamError(AppError):
 class DuplicateRequest(AppError):
     status_code = 409
     code = "duplicate_request"
+
+
+class StorageError(AppError):
+    """The local database could not be read or written.
+
+    Raised only where a silent fallback would lie to the user: saving a
+    schedule that was not saved. Cache reads degrade quietly instead.
+    """
+
+    status_code = 500
+    code = "storage_error"

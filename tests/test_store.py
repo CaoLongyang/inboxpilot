@@ -370,6 +370,7 @@ def test_stats_reports_counts(temp_db: Path) -> None:
         "analysis_results": 0,
         "action_proposals": 0,
         "execution_logs": 0,
+        "schedule_profile": 0,
     }
     store.cache_store(build_analysis(), build_usage())
     store.save_proposal(build_proposal())
@@ -378,4 +379,5 @@ def test_stats_reports_counts(temp_db: Path) -> None:
         "analysis_results": 1,
         "action_proposals": 1,
         "execution_logs": 1,
+        "schedule_profile": 0,
     }

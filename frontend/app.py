@@ -25,17 +25,20 @@ from __future__ import annotations
 
 import html
 import os
+import re
 import uuid
 from typing import Any
 
 import httpx
+import pandas as pd
 import streamlit as st
 
 
 API_BASE = os.getenv("INBOXPILOT_API_URL", "http://localhost:8000").rstrip("/")
-PAGES = ["Connect", "Inbox", "Analysis", "Action Review"]
+PAGES = ["Connect", "Inbox", "Analysis", "My week", "Action Review"]
 PAGE_SIZES = [10, 20, 30]
 DEFAULT_PAGE_SIZE = 10
+WEEKDAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
 
 
 # --------------------------------------------------------------------------
@@ -252,6 +255,16 @@ def inject_css() -> None:
   .ip-task-meta span {{ font-weight: 400; color: {p['muted']}; }}
   .ip-task-note {{ font-size: 0.93rem; line-height: 1.55; color: {p['muted']};
                    margin-top: 6px; }}
+
+  /* The verdict: one sentence the user acts on, with the clash it was based on
+     directly underneath. The spine colour carries the answer. */
+  .ip-verdict {{ border-left: 5px solid {p['summary_bar']}; background: {p['panel_bg']};
+                 padding: 16px 20px; border-radius: 0 10px 10px 0; margin: 4px 0 10px 0; }}
+  .ip-verdict-title {{ font-size: 1.25rem; font-weight: 800; line-height: 1.4; }}
+  .ip-verdict-why {{ font-size: 1rem; line-height: 1.6; margin-top: 7px; }}
+  .ip-verdict-meta {{ font-size: 0.92rem; line-height: 1.55; color: {p['muted']};
+                      margin-top: 9px; }}
+  .ip-verdict-meta b {{ color: inherit; }}
 </style>
 """,
         unsafe_allow_html=True,
@@ -363,6 +376,79 @@ def task_block(action: dict) -> str:
         parts.append(
             f'<div class="ip-task-note">Needs your input: {esc("; ".join(needs))}</div>'
         )
+    parts.append("</div>")
+    return "".join(parts)
+
+
+VERDICT_TONE = {
+    "attend": "green",
+    "attend_despite_conflict": "amber",
+    "decline_conflict": "red",
+    "skip_not_worth_it": "gray",
+    "unknown_timing": "gray",
+    "not_an_event": "gray",
+    "no_schedule": "blue",
+}
+
+
+def _window_text(event: dict) -> str:
+    start, end = event.get("start"), event.get("end")
+    if not start:
+        return ""
+    if not end or end == start:
+        return str(start).replace("T", " ")
+    return f"{str(start).replace('T', ' ')} to {str(end).replace('T', ' ')}"
+
+
+def verdict_card(result: dict) -> str:
+    """The triage answer, with the evidence that produced it.
+
+    The colour is the answer (green go, amber go-anyway, red decline), because
+    the headline is the one thing the user should be able to read from across
+    the room. Everything under it exists so the verdict can be checked.
+    """
+    verdict = str(result.get("verdict") or "unknown")
+    palette = _PALETTE[_theme()]
+    colour = palette[VERDICT_TONE.get(verdict, "gray")][1]
+
+    parts = [f'<div class="ip-verdict" style="border-left-color:{colour}">']
+    parts.append(
+        f'<div class="ip-verdict-title">{esc(result.get("headline") or verdict)}</div>'
+    )
+    if result.get("reasoning"):
+        parts.append(f'<div class="ip-verdict-why">{esc(result["reasoning"])}</div>')
+
+    event = result.get("event") or {}
+    meta: list[str] = []
+    window = _window_text(event)
+    if window:
+        name = event.get("name") or "the event"
+        meta.append(f"<b>{esc(name)}</b>: {esc(window)}")
+    if event.get("location"):
+        meta.append(f"where: {esc(event['location'])}")
+    if event.get("commitment_hours"):
+        meta.append(f"about {esc(event['commitment_hours'])} hours")
+    value = result.get("value") or {}
+    if value.get("score"):
+        meta.append(f"value {esc(value['score'])}/5")
+    if meta:
+        parts.append(f'<div class="ip-verdict-meta">{" &nbsp;·&nbsp; ".join(meta)}</div>')
+
+    conflicts = result.get("conflicts") or []
+    if conflicts:
+        rows = "".join(
+            f"<div>clashes: {esc(c.get('busy_label') or 'busy')} "
+            f"{esc(str(c.get('on_date', '')))} "
+            f"{esc(str(c.get('start', ''))[11:16])}-{esc(str(c.get('end', ''))[11:16])}</div>"
+            for c in conflicts
+        )
+        parts.append(f'<div class="ip-verdict-meta">{rows}</div>')
+
+    reasons = value.get("reasons") or []
+    if reasons:
+        listed = "".join(f"<div>- {esc(reason)}</div>" for reason in reasons[:4])
+        parts.append(f'<div class="ip-verdict-meta">{listed}</div>')
+
     parts.append("</div>")
     return "".join(parts)
 
@@ -744,6 +830,47 @@ def show_inbox() -> None:
                 _analysis_card(item, response)
 
 
+def _triage_section(message_id: str) -> None:
+    """Ask the schedule-aware question about this email.
+
+    Deliberately a button rather than automatic: it costs a model call, and the
+    user should be able to look at an email without being told what to do about
+    their week.
+    """
+    st.markdown(label("Should I attend?"), unsafe_allow_html=True)
+    st.caption(
+        "Checks whatever this email invites you to against the week you described "
+        "in My week."
+    )
+
+    assessment = st.session_state.get("assessments", {}).get(message_id)
+    if st.button("Check against my week", key="assess_btn"):
+        try:
+            with st.spinner("Comparing the invitation with your timetable..."):
+                assessment = api_request(
+                    "POST", "/opportunities/assess",
+                    payload={"message_id": message_id}, timeout=120.0,
+                )
+            st.session_state.setdefault("assessments", {})[message_id] = assessment
+        except APIError as exc:
+            error_message(exc)
+            return
+
+    if not assessment:
+        return
+
+    st.markdown(verdict_card(assessment), unsafe_allow_html=True)
+    if assessment.get("verdict") == "no_schedule":
+        if st.button("Tell InboxPilot my week", type="primary"):
+            go("My week")
+        return
+    for item in assessment.get("missing") or []:
+        st.caption(f"The email does not say: {item}")
+    if st.button("Check again", key="assess_again"):
+        st.session_state.get("assessments", {}).pop(message_id, None)
+        st.rerun()
+
+
 # --------------------------------------------------------------------------
 # Analysis — deep dive for one email, then propose a reply
 # --------------------------------------------------------------------------
@@ -841,6 +968,9 @@ def show_analysis() -> None:
     )
 
     st.divider()
+    _triage_section(message_id)
+
+    st.divider()
     if st.button("Propose a reply", type="primary"):
         try:
             with st.spinner("Deciding whether a reply is warranted..."):
@@ -873,6 +1003,145 @@ def show_analysis() -> None:
         if any(x.get("kind") == "create_draft" and x.get("draft") for x in actions):
             if st.button("Review the draft", type="primary"):
                 go("Action Review")
+
+
+# --------------------------------------------------------------------------
+# My week — the timetable the triage answers are computed against
+# --------------------------------------------------------------------------
+
+_HHMM = re.compile(r"^([01]\d|2[0-3]):[0-5]\d$")
+
+
+def show_schedule() -> None:
+    st.markdown("### My week")
+    st.caption(
+        "InboxPilot cannot tell you whether an invitation clashes with your week "
+        "until it knows your week. This stays on your machine: it is stored in the "
+        "local SQLite file and never sent to a model as anything but text."
+    )
+    try:
+        profile = api_request("GET", "/schedule", timeout=10.0)
+    except APIError as exc:
+        error_message(exc)
+        return
+
+    blocks = profile.get("busy_blocks") or []
+    frame = pd.DataFrame(
+        [
+            {
+                "Day": WEEKDAYS[int(block.get("weekday", 0)) % 7],
+                "From": block.get("start", ""),
+                "To": block.get("end", ""),
+                "What": block.get("label", ""),
+            }
+            for block in blocks
+        ],
+        columns=["Day", "From", "To", "What"],
+    )
+
+    roles = ["student", "worker", "other"]
+    role = profile.get("role") or "student"
+
+    with st.form("week_form"):
+        left, right = st.columns([1, 1])
+        role_value = left.selectbox(
+            "I am a", roles, index=roles.index(role) if role in roles else 0
+        )
+        timezone_value = right.text_input(
+            "Timezone", value=profile.get("timezone") or "Asia/Shanghai"
+        )
+
+        st.markdown(
+            "**When are you normally busy?** One row per lecture, shift or standing "
+            "meeting. Times are 24-hour, e.g. `09:00`."
+        )
+        edited = st.data_editor(
+            frame,
+            num_rows="dynamic",
+            use_container_width=True,
+            column_config={
+                "Day": st.column_config.SelectboxColumn("Day", options=WEEKDAYS, required=True),
+                "From": st.column_config.TextColumn("From (HH:MM)"),
+                "To": st.column_config.TextColumn("To (HH:MM)"),
+                "What": st.column_config.TextColumn("What (e.g. Algorithms lecture)"),
+            },
+            key="week_editor",
+        )
+
+        notes_value = st.text_area(
+            "What is worth rearranging your week for?",
+            value=profile.get("notes") or "",
+            placeholder="e.g. only paid AI hackathons count; ignore generic webinars",
+            height=90,
+        )
+        threshold_value = st.slider(
+            "Only skip something else for an event rated at least",
+            min_value=1,
+            max_value=5,
+            value=int(profile.get("value_threshold") or 4),
+            help="A conflicting event scoring below this is a 'decline'.",
+        )
+        saved = st.form_submit_button("Save my week", type="primary")
+
+    if saved:
+        payload_blocks, problems = [], []
+        for position, row in edited.iterrows():
+            day = str(row.get("Day") or "").strip()
+            start = str(row.get("From") or "").strip()
+            end = str(row.get("To") or "").strip()
+            if not start and not end:
+                continue  # an empty row in a dynamic editor is not an error
+            if day not in WEEKDAYS:
+                problems.append(f"row {position + 1}: pick a day")
+                continue
+            if not _HHMM.match(start) or not _HHMM.match(end):
+                problems.append(f"row {position + 1}: times must look like 09:00")
+                continue
+            if end <= start:
+                problems.append(f"row {position + 1}: 'To' must be after 'From'")
+                continue
+            payload_blocks.append(
+                {
+                    "weekday": WEEKDAYS.index(day),
+                    "start": start,
+                    "end": end,
+                    "label": str(row.get("What") or "").strip()[:80],
+                }
+            )
+        if problems:
+            st.error("Fix these first: " + "; ".join(problems))
+        else:
+            try:
+                with st.spinner("Saving..."):
+                    saved_profile = api_request(
+                        "PUT", "/schedule",
+                        payload={
+                            "role": role_value,
+                            "timezone": timezone_value.strip() or "Asia/Shanghai",
+                            "busy_blocks": payload_blocks,
+                            "notes": notes_value.strip(),
+                            "value_threshold": int(threshold_value),
+                        },
+                        timeout=15.0,
+                    )
+                # Every verdict computed against the old timetable is now stale.
+                st.session_state["assessments"] = {}
+                st.success(
+                    f"Saved. {len(saved_profile.get('busy_blocks') or [])} busy "
+                    "block(s) in your week."
+                )
+            except APIError as exc:
+                error_message(exc)
+
+    if not blocks:
+        st.info(
+            "No busy blocks yet. Without them, InboxPilot will not guess about a "
+            "clash: it will ask you to fill this in first."
+        )
+    st.caption(
+        "Security: this is the only data you own here. It is stored locally and is "
+        "never written to Gmail."
+    )
 
 
 # --------------------------------------------------------------------------
@@ -1012,6 +1281,7 @@ def main() -> None:
 
     st.session_state.setdefault("nav_page", "Connect")
     st.session_state.setdefault("analyses", {})
+    st.session_state.setdefault("assessments", {})
     requested = st.session_state.pop("requested_page", None)
     if requested in PAGES:
         st.session_state.nav_page = requested
@@ -1044,6 +1314,8 @@ def main() -> None:
         show_inbox()
     elif page == "Analysis":
         show_analysis()
+    elif page == "My week":
+        show_schedule()
     elif page == "Action Review":
         show_action_review()
 

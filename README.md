@@ -34,10 +34,37 @@ Connect -> Understand -> Decide -> Approve -> Act -> Verify
 2. **Understand** — Nemotron returns a structured `EmailAnalysis`; every claim
    carries a verbatim quote and is labelled `explicit`, `inference` or `unknown`.
 3. **Decide** — the agent proposes actions and drafts, and states what it does
-   not know.
+   not know. For an invitation (a hackathon, a conference, a webinar) it also
+   answers the question the user actually has: *does this fit my week, and is it
+   worth rearranging for?*
 4. **Approve** — the user edits and approves in the UI. This is a hard gate.
 5. **Act** — the backend creates a Gmail **draft** (never a send).
 6. **Verify** — the draft is read back from Gmail; the returned draft id is shown.
+
+### The schedule check
+
+Email agents usually stop at "here is what the email says". This one also asks
+whether the user can act on it.
+
+The user describes their week once (lectures, shifts, standing meetings) and
+sets a bar: *how good does an event have to be before I skip something else for
+it?* Then, for any email that invites them somewhere, the verdict is one of:
+
+| Verdict | When |
+|---|---|
+| **Go** | no clash, and it is worth the hours |
+| **Go anyway** | it clashes, but it clears the user's bar |
+| **Decline** | it clashes, and it does not clear the bar |
+| **Skip** | no clash, but it is not worth the hours |
+| **Ask for the date** | the email never says when it is |
+| **Tell me your week first** | no schedule on file — we refuse to guess |
+
+The division of labour is deliberate: the model extracts *when* the event is and
+scores *how much it is worth* (1-5, with reasons). The overlap arithmetic and
+the verdict table are Python (`backend/services/schedule.py`,
+`triage.decide`). So every verdict can be shown next to the exact lecture it
+clashes with, and a hostile email cannot talk its way into "you must attend" —
+at worst it inflates a score that is clamped to 5 and printed with its reasons.
 
 ## Architecture
 
