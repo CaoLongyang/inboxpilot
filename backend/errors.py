@@ -67,8 +67,3 @@ class UpstreamError(AppError):
 class DuplicateRequest(AppError):
     status_code = 409
     code = "duplicate_request"
-
-
-class NotImplementedYet(AppError):
-    status_code = 501
-    code = "not_implemented"

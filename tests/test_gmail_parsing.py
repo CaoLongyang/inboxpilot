@@ -12,7 +12,7 @@ from urllib.parse import parse_qs, urlparse
 
 import pytest
 
-from backend.errors import ConfigError, NotImplementedYet
+from backend.errors import AppError, AuthError, ConfigError
 from backend.services import gmail_client, token_store
 
 
@@ -128,9 +128,19 @@ def test_to_detail_includes_body_and_keeps_from_alias() -> None:
     assert "sender" not in dumped
 
 
-def test_draft_creation_is_not_silently_available() -> None:
-    with pytest.raises(NotImplementedYet):
+def test_draft_creation_requires_a_connected_mailbox() -> None:
+    """Now that the write exists, the thing it must never do is run unconnected."""
+    with pytest.raises(AuthError):
         gmail_client.create_draft(to=["a@b.c"], subject="s", body="b")
+
+
+def test_draft_creation_rejects_a_header_injection_attempt() -> None:
+    """A newline in a recipient is how a Bcc gets smuggled in."""
+    with pytest.raises(AppError) as exc:
+        gmail_client.create_draft(
+            to=["a@b.c\r\nBcc: attacker@evil.test"], subject="s", body="b"
+        )
+    assert exc.value.code == "invalid_recipient"
 
 
 def test_oauth_requires_configuration(no_credentials) -> None:

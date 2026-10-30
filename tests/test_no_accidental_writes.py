@@ -191,9 +191,21 @@ def test_create_draft_is_the_only_write_primitive() -> None:
     assert offenders == [], f"unexpected write-shaped helpers: {offenders}"
 
 
-def test_create_draft_is_not_implemented_yet() -> None:
-    """Day 4 replaces this; until then the only write path refuses to run."""
-    from backend.errors import NotImplementedYet
+def test_the_client_never_calls_send() -> None:
+    """The product promise is "it never sends email", checked at the source.
 
-    with pytest.raises(NotImplementedYet):
+    A helper named `send` would be caught by the test above, but the API call
+    itself is made inline (`service.users().messages().send(...)`), so the name
+    scan alone does not cover it. This does.
+    """
+    source = Path(gmail_client.__file__).read_text(encoding="utf-8")
+    assert ".send(" not in source
+    assert "messages().send" not in source
+
+
+def test_draft_creation_is_the_only_write_path() -> None:
+    """`create_draft` refuses before Gmail when the mailbox is not connected."""
+    from backend.errors import AuthError
+
+    with pytest.raises(AuthError):
         gmail_client.create_draft(to=["a@example.com"], subject="s", body="b")
