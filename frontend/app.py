@@ -346,8 +346,11 @@ def show_action_review() -> None:
     st.write(action.get("why", ""))
     missing = action.get("missing_info", [])
     if missing:
-        st.warning("Backend marked missing information: " + "; ".join(missing))
-        st.caption("Ask the agent to regenerate the proposal after the missing information is resolved.")
+        st.warning("The agent could not determine: " + "; ".join(missing))
+        st.caption(
+            "These appear as bracketed placeholders in the draft body. Replace them "
+            "before approving: the backend will not create a draft while one remains."
+        )
 
     try:
         auth = api_request("GET", "/auth/status", timeout=5.0)
@@ -374,8 +377,6 @@ def show_action_review() -> None:
             st.error("A Gmail account must be connected before creating a draft.")
         elif approver != approver_email:
             st.error("The approving account must match the connected Gmail account.")
-        elif missing:
-            st.error("The proposal still has unresolved required information.")
         elif not to_list or not subject.strip() or not body.strip():
             st.error("A recipient, subject and body are required.")
         else:

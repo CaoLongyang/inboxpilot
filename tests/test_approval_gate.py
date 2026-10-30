@@ -126,12 +126,56 @@ def test_a_non_draft_proposal_is_refused(wired) -> None:
     assert wired["create"] == []
 
 
-def test_unresolved_missing_info_blocks_execution(wired) -> None:
+def test_a_placeholder_in_the_approved_body_blocks_execution(wired) -> None:
+    """The gate blocks on the unresolved text, not on the model's note.
+
+    Blocking on `missing_info` would refuse forever: the note cannot be cleared
+    by fixing the draft, so a user who filled the gap in correctly would still be
+    told to start over.
+    """
     store.save_proposal(make_proposal(missing_info=["confirm the submission date"]))
+    request = make_request(
+        draft=DraftProposal(
+            to=["chiam@um.edu.my"],
+            subject="Re: Proposal Presentation",
+            body="I will submit by [confirm the submission date].",
+            thread_id="thread-1",
+        )
+    )
     with pytest.raises(ApprovalRequired) as exc:
-        drafter.execute(make_request())
-    assert exc.value.details["missing_info"] == ["confirm the submission date"]
+        drafter.execute(request)
+    assert exc.value.details["placeholders"] == ["[confirm the submission date]"]
     assert wired["create"] == []
+
+
+def test_filling_the_placeholder_unblocks_execution(wired) -> None:
+    """The user's edit is what resolves the gap; nothing else needs regenerating."""
+    store.save_proposal(make_proposal(missing_info=["confirm the submission date"]))
+    request = make_request(
+        draft=DraftProposal(
+            to=["chiam@um.edu.my"],
+            subject="Re: Proposal Presentation",
+            body="I will submit by 24 October 2026.",
+            thread_id="thread-1",
+        )
+    )
+    result = drafter.execute(request)
+    assert result.status is ExecutionStatus.CREATED
+    assert len(wired["create"]) == 1
+
+
+def test_ordinary_brackets_are_not_treated_as_placeholders(wired) -> None:
+    """`[1]` style citations are content, not a gap; the pattern needs 3+ chars."""
+    store.save_proposal(make_proposal())
+    request = make_request(
+        draft=DraftProposal(
+            to=["chiam@um.edu.my"],
+            subject="Re: Proposal Presentation",
+            body="As noted in the rubric [1], the slides are ready.",
+            thread_id="thread-1",
+        )
+    )
+    assert drafter.execute(request).status is ExecutionStatus.CREATED
 
 
 def test_the_approver_must_own_the_mailbox(wired) -> None:

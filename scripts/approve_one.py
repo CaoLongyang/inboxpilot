@@ -23,8 +23,80 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from backend.errors import AppError  # noqa: E402
-from backend.schemas import DraftCreateRequest  # noqa: E402
+from backend.schemas import (  # noqa: E402
+    ActionKind,
+    DraftCreateRequest,
+    DraftProposal,
+    ProposedAction,
+)
 from backend.services import drafter, gmail_client, planner, store, token_store  # noqa: E402
+
+
+def self_test(account: str, *, approve: bool, key: str | None) -> int:
+    """Draft a note to yourself. Exercises A11 + A13 without needing an inbox.
+
+    Useful when the mailbox has nothing reply-able in it: the write path and the
+    read-back check are the parts most worth seeing work, and neither of them
+    needs an inbound email to prove itself.
+    """
+    if not account:
+        print("The connected mailbox has no address on file; cannot self-test.")
+        return 2
+
+    proposal = ProposedAction(
+        id=uuid.uuid4().hex,
+        message_id="self-test",
+        kind=ActionKind.CREATE_DRAFT,
+        title="Self test: prove the write path",
+        why="No inbound email is required to prove that a draft is created and verified.",
+        draft=DraftProposal(
+            to=[account],
+            subject="InboxPilot self test",
+            body=(
+                "This draft was created by InboxPilot to prove the write path.\n\n"
+                "If you can read this in Gmail -> Drafts, creation and read-back both worked."
+            ),
+        ),
+    )
+    store.save_proposal(proposal)
+    print(f"proposal: {proposal.id}")
+    print(f"To      : {account}")
+    print(f"Subject : {proposal.draft.subject}")
+    print()
+
+    if not approve:
+        print("Dry run. Nothing was written to Gmail.")
+        print("To create it:  python scripts/approve_one.py --self-test --approve")
+        return 0
+
+    key = key or uuid.uuid4().hex
+    print(f"idempotency key: {key}")
+    try:
+        result = drafter.execute(
+            DraftCreateRequest(
+                proposal_id=proposal.id,
+                idempotency_key=key,
+                draft=proposal.draft,
+                approved_by=account,
+                approved=True,
+            )
+        )
+    except AppError as exc:
+        print(f"\nFAILED  {exc.code}: {exc.message}")
+        return 1
+
+    print()
+    print("=" * 72)
+    print(f"RESULT  {result.status.value.upper()}")
+    print("=" * 72)
+    print(f"draft_id : {result.draft_id}")
+    print(f"verified : {result.verified}")
+    print(f"message  : {result.message}")
+    print()
+    print("Open Gmail -> Drafts to see it.")
+    print()
+    print(f"Run again with --key {key} to prove a retry does not duplicate it.")
+    return 0 if result.verified else 1
 
 
 def main() -> int:
@@ -37,6 +109,11 @@ def main() -> int:
         help="actually create the Gmail draft (writes to the mailbox)",
     )
     parser.add_argument("--key", default=None, help="reuse a previous idempotency key")
+    parser.add_argument(
+        "--self-test",
+        action="store_true",
+        help="skip planning: draft a note to yourself, to prove the write path alone",
+    )
     args = parser.parse_args()
 
     state = token_store.status()
@@ -45,6 +122,9 @@ def main() -> int:
         return 2
     account = state.get("email") or ""
     print(f"account : {account or '(unknown)'}")
+
+    if args.self_test:
+        return self_test(account, approve=args.approve, key=args.key)
 
     if args.message_id:
         message_id = args.message_id

@@ -4,7 +4,9 @@ This module answers two questions and nothing else:
 
 1. **Was this write authorised?** Five independent checks, all of which must
    pass before a single byte reaches Gmail. The browser is not trusted for any
-   of them.
+   of them: explicit approval, a proposal the server can resolve, the right
+   action kind, no unfilled placeholder left in the approved text, and an
+   approving account that owns the connected mailbox.
 2. **Did the write actually happen?** Gmail returning a draft id is a claim; a
    subsequent `drafts.get` is evidence. We report `verified` only on evidence.
 
@@ -17,6 +19,7 @@ which is treated as a refusal rather than a licence to try again.
 from __future__ import annotations
 
 import logging
+import re
 from dataclasses import dataclass
 from email.utils import parseaddr
 
@@ -30,6 +33,13 @@ from backend.schemas import (
 from backend.services import gmail_client, store, token_store
 
 log = logging.getLogger(__name__)
+
+# A bracketed placeholder is how the planner marks a fact only the user knows.
+# The gate refuses while one remains, which makes *editing the text* the thing
+# that unblocks execution. Blocking on the model's `missing_info` note instead
+# would refuse forever: the note cannot be cleared by fixing the draft, so a
+# user who filled the gap in correctly would still be told to start over.
+_PLACEHOLDER = re.compile(r"\[[^\[\]]{3,}\]")
 
 
 def _normalise(text: str | None) -> str:
@@ -169,9 +179,24 @@ def _authorise(request: DraftCreateRequest) -> tuple[object, str]:
         )
 
     if proposal.missing_info:
+        # Advisory, not blocking: the user sees this list in the UI and can fill
+        # the gaps by editing the draft. What actually blocks is a placeholder
+        # still present in the approved text, checked below.
+        log.info(
+            "drafter.proposal_has_gaps proposal_id=%s gaps=%d",
+            proposal.id,
+            len(proposal.missing_info),
+        )
+
+    placeholders = _PLACEHOLDER.findall(request.draft.body or "")
+    if placeholders:
         raise ApprovalRequired(
-            "The proposal is missing information that only the user can supply",
-            details={"proposal_id": proposal.id, "missing_info": proposal.missing_info},
+            "The approved draft still contains placeholders only you can fill in",
+            details={
+                "proposal_id": proposal.id,
+                "placeholders": placeholders[:5],
+                "missing_info": proposal.missing_info,
+            },
         )
 
     account = _connected_account()
