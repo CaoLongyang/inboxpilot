@@ -49,16 +49,49 @@ class APIError(Exception):
         self.code = code
 
 
+@st.cache_resource(show_spinner=False)
+def _http_client() -> httpx.Client:
+    """One pooled HTTP client for the whole Streamlit process.
+
+    Both arguments here are measured, not stylistic. Against the local backend:
+
+    * ``httpx.request()`` (the obvious call) builds a new connection pool and
+      re-reads the environment on **every** call: ~190 ms per request here.
+      The same request through a shared client: ~2 ms.
+    * ``trust_env=False`` keeps the machine's ``http_proxy`` out of localhost
+      traffic. The proxy accepts the connection and then fails to reach
+      ``127.0.0.1``, which costs a round trip before falling back.
+
+    Streamlit reruns the whole script on every widget interaction, so a
+    sidebar health check plus an auth check is two of these per click. That is
+    what "laggy page switching" actually was.
+    """
+    return httpx.Client(
+        base_url=API_BASE,
+        timeout=httpx.Timeout(15.0, connect=5.0),
+        trust_env=False,
+        limits=httpx.Limits(max_keepalive_connections=8, keepalive_expiry=15.0),
+        headers={"User-Agent": "InboxPilot-frontend/1.0"},
+    )
+
+
 def api_request(
     method: str, path: str, *, params: dict | None = None,
     payload: dict | None = None, timeout: float = 15.0,
 ) -> dict[str, Any]:
     """Call the backend; respect its documented error envelope."""
+    client = _http_client()
     try:
-        response = httpx.request(
-            method, f"{API_BASE}{path}",
-            params=params, json=payload, timeout=timeout,
-        )
+        try:
+            response = client.request(
+                method, path, params=params, json=payload, timeout=timeout,
+            )
+        except httpx.RemoteProtocolError:
+            # The pooled keep-alive socket died under us (backend restarted).
+            # One retry on a fresh connection; anything else is a real failure.
+            response = client.request(
+                method, path, params=params, json=payload, timeout=timeout,
+            )
     except httpx.RequestError as exc:
         raise APIError(f"Cannot contact backend at {API_BASE}. Is FastAPI running?") from exc
 
@@ -86,6 +119,40 @@ def error_message(exc: APIError) -> None:
         st.error(f"Backend is missing configuration: {exc}")
     else:
         st.error(f"{exc.code}: {exc}")
+
+
+@st.cache_data(ttl=20, show_spinner=False)
+def _health_snapshot() -> dict[str, Any]:
+    """Cached health check for the sidebar badge.
+
+    The sidebar is drawn on every rerun, so an uncached call here meant one
+    network round trip per click. Failures are cached too — otherwise an
+    offline backend would pay the connect timeout on every single rerun.
+    """
+    try:
+        return {"ok": True, "data": api_request("GET", "/health", timeout=3.0)}
+    except APIError as exc:
+        return {"ok": False, "error": str(exc)}
+
+
+@st.cache_data(ttl=15, show_spinner=False)
+def _auth_status() -> dict[str, Any]:
+    """Cached Gmail connection state.
+
+    Cached for 15 s, and explicitly invalidated by the actions that change it
+    (connect, disconnect, refresh). A stale badge after OAuth is the one thing
+    that would be worse than the latency, hence the short TTL and the button.
+    """
+    try:
+        return api_request("GET", "/auth/status", timeout=5.0)
+    except APIError as exc:
+        return {"connected": False, "error": str(exc), "failed": True}
+
+
+def forget_status_cache() -> None:
+    """Drop cached status after anything that could change it."""
+    _auth_status.clear()
+    _health_snapshot.clear()
 
 
 # --------------------------------------------------------------------------
@@ -271,10 +338,12 @@ def _analyze_many(message_ids: list[str]) -> None:
 def show_connection() -> None:
     st.markdown("### Connect Gmail")
     st.caption("Authorize a mailbox before working with real email.")
-    try:
-        status = api_request("GET", "/auth/status", timeout=5.0)
-    except APIError as exc:
-        error_message(exc)
+    status = _auth_status()
+    if status.get("failed"):
+        st.error(f"Cannot reach the backend: {status.get('error', 'unknown error')}")
+        if st.button("Try again"):
+            forget_status_cache()
+            st.rerun()
         return
 
     if status.get("connected"):
@@ -294,6 +363,7 @@ def show_connection() -> None:
             try:
                 api_request("POST", "/auth/disconnect")
                 clear_email_results()
+                forget_status_cache()
                 st.rerun()
             except APIError as exc:
                 error_message(exc)
@@ -308,7 +378,8 @@ def show_connection() -> None:
             "Choose Advanced, then continue — the app only requests read-only access "
             "plus draft creation."
         )
-        if st.button("Refresh connection status"):
+        if st.button("I have authorized — check again"):
+            forget_status_cache()
             st.rerun()
     st.divider()
     st.caption(
@@ -477,10 +548,9 @@ def _analysis_card(item: dict, response: dict) -> None:
 
 def show_inbox() -> None:
     st.markdown("### Inbox")
-    try:
-        auth = api_request("GET", "/auth/status", timeout=5.0)
-    except APIError as exc:
-        error_message(exc)
+    auth = _auth_status()
+    if auth.get("failed"):
+        st.error(f"Cannot reach the backend: {auth.get('error', 'unknown error')}")
         return
     if not auth.get("connected"):
         st.session_state.pop("email_list", None)
@@ -756,9 +826,8 @@ def show_action_review() -> None:
             "before approving: the backend will not create a draft while one remains."
         )
 
-    try:
-        auth = api_request("GET", "/auth/status", timeout=5.0)
-    except APIError:
+    auth = _auth_status()
+    if auth.get("failed"):
         auth = {}
     approver_email = auth.get("email") or ""
     completed = st.session_state.get("execution_result", {}).get("status") == "created"
@@ -858,17 +927,19 @@ def main() -> None:
         st.caption("From email information to real-world action.")
         page = st.radio("Navigation", PAGES, key="nav_page", label_visibility="collapsed")
         st.divider()
-        try:
-            health = api_request("GET", "/health", timeout=4.0)
+        health = _health_snapshot()
+        if health["ok"]:
+            data = health["data"]
             st.markdown(badge("backend online", "green"), unsafe_allow_html=True)
-            st.caption(
-                f"env: {health.get('env', '?')} · config: {health.get('status', '?')}"
-            )
-            if health.get("status") != "ok":
+            st.caption(f"env: {data.get('env', '?')} · config: {data.get('status', '?')}")
+            if data.get("status") != "ok":
                 st.warning("Some integrations need configuration.")
-        except APIError as exc:
+        else:
             st.markdown(badge("backend offline", "red"), unsafe_allow_html=True)
-            st.caption(str(exc))
+            st.caption(health["error"])
+        if st.button("Recheck", use_container_width=True):
+            forget_status_cache()
+            st.rerun()
         st.divider()
         analyses = st.session_state.get("analyses", {})
         st.caption(f"analyzed this session: {len(analyses)}")
