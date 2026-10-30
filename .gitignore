@@ -47,3 +47,7 @@ node_modules/
 
 # --- Internal planning docs (not part of the public submission) ---
 docs/internal/
+
+# --- Verification scratch output (tmp/, shots/) ---
+tmp/
+shots/
