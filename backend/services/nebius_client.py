@@ -7,6 +7,10 @@ Two model roles (see hackathon Track 2 guidance):
 - `fast`      -> classification / summary / extraction  (Nemotron Super or Nano)
 - `reasoning` -> WhatIf decision trees and planning      (Nemotron Ultra)
 
+Nemotron is a hybrid-reasoning family: it can emit a visible chain of thought
+before the answer. `fast` turns that off (an extraction task has nothing to
+reason about, and the thinking tokens are billed), `reasoning` leaves it on.
+
 Base URL is `https://api.tokenfactory.nebius.com/v1/` per the official
 Token Factory quickstart. Model IDs drift as the catalogue changes, so always
 verify them with `python scripts/check_nebius.py` instead of trusting this file.
@@ -61,13 +65,26 @@ def list_models() -> list[str]:
     return [m.id for m in response.data]
 
 
+def _thinking_default(role: str) -> bool:
+    """Extraction wants an answer; planning wants a chain of thought.
+
+    The Nemotron family on Token Factory exposes a hybrid thinking mode. With it
+    on, the model writes to `reasoning_content` first and only then to `content`,
+    so an extraction call can burn its whole `max_tokens` budget thinking and
+    return `content=None`. Measured on `nemotron-3-super-120b-a12b`:
+    2793ms / 140 tokens with thinking, 1088ms / 81 tokens without.
+    """
+    return role == "reasoning"
+
+
 def chat(
     messages: list[dict[str, str]],
     *,
     model: str | None = None,
     role: str = "fast",
     temperature: float = 0.0,
-    max_tokens: int = 1200,
+    max_tokens: int = 2000,
+    thinking: bool | None = None,
 ) -> tuple[str, ModelUsage]:
     """One chat completion. Returns (text, usage)."""
     settings = get_settings()
@@ -80,15 +97,22 @@ def chat(
             details={"expected_env_var": f"NEBIUS_MODEL_{role.upper()}"},
         )
 
+    use_thinking = _thinking_default(role) if thinking is None else thinking
+    request: dict[str, Any] = {
+        "model": chosen,
+        "messages": messages,
+        "temperature": temperature,
+        "max_tokens": max_tokens,
+    }
+    if not use_thinking:
+        # vLLM reads this out of the request body; the OpenAI SDK needs
+        # `extra_body` to forward keys it does not know about.
+        request["extra_body"] = {"chat_template_kwargs": {"enable_thinking": False}}
+
     client = _build_client()
     started = time.perf_counter()
     try:
-        completion = client.chat.completions.create(
-            model=chosen,
-            messages=messages,
-            temperature=temperature,
-            max_tokens=max_tokens,
-        )
+        completion = client.chat.completions.create(**request)
     except Exception as exc:  # noqa: BLE001 - third party
         raise UpstreamError(
             "The model call failed",
@@ -106,12 +130,53 @@ def chat(
     )
     # Deliberately do not log prompt content: it contains email bodies.
     log.info(
-        "nebius.chat model=%s latency_ms=%s tokens=%s",
+        "nebius.chat model=%s role=%s thinking=%s latency_ms=%s tokens=%s",
         meta.model,
+        role,
+        use_thinking,
         meta.latency_ms,
         meta.total_tokens,
     )
-    text = (completion.choices[0].message.content or "").strip()
+
+    choice = completion.choices[0]
+    text = (choice.message.content or "").strip()
+
+    if not text:
+        # A reasoning model that ran out of budget returns `content=None` with
+        # the whole answer still inside `reasoning_content`. Returning "" here
+        # would surface as a confusing "the model did not return a JSON
+        # object", so name the actual cause instead. Checked before truncation
+        # because "it spent the whole budget thinking" is the actionable fact.
+        reasoning = (
+            getattr(choice.message, "reasoning_content", None)
+            or getattr(choice.message, "reasoning", None)
+            or ""
+        )
+        raise UpstreamError(
+            "The model returned no answer text",
+            details={
+                "model": chosen,
+                "finish_reason": choice.finish_reason,
+                "reasoning_chars": len(reasoning),
+                "reason": "reasoning_only_response" if reasoning else "empty_response",
+            },
+        )
+
+    # Hitting the token ceiling mid-object produces text that looks like JSON
+    # right up to the point it doesn't parse. Report the cause, not the symptom:
+    # "malformed JSON" would send the next person hunting for a prompt bug.
+    if choice.finish_reason == "length":
+        raise UpstreamError(
+            "The model ran out of output tokens before finishing",
+            details={
+                "model": chosen,
+                "reason": "output_truncated",
+                "max_tokens": max_tokens,
+                "completion_tokens": getattr(usage, "completion_tokens", None),
+                "chars": len(text),
+            },
+        )
+
     return text, meta
 
 
@@ -144,11 +209,42 @@ def chat_json(
     *,
     model: str | None = None,
     role: str = "fast",
-    max_tokens: int = 1200,
+    max_tokens: int = 2000,
+    thinking: bool | None = None,
 ) -> tuple[dict[str, Any], ModelUsage]:
-    text, usage = chat(
-        messages, model=model, role=role, temperature=0.0, max_tokens=max_tokens
-    )
+    """A chat completion that must be one JSON object.
+
+    One retry, only for truncation. Measured on this exact prompt, the small
+    Nemotron variants spend 1195 of a 1200-token budget, so the ceiling is a
+    real failure mode rather than a theoretical one; doubling the budget once
+    costs a single extra call on a rare path. A malformed-but-complete response
+    is *not* retried — that is the model getting the task wrong, and quietly
+    asking again until it produces something parseable is how a pipeline ends up
+    with output nobody can explain.
+    """
+    try:
+        text, usage = chat(
+            messages,
+            model=model,
+            role=role,
+            temperature=0.0,
+            max_tokens=max_tokens,
+            thinking=thinking,
+        )
+    except UpstreamError as exc:
+        if exc.details.get("reason") != "output_truncated":
+            raise
+        log.warning(
+            "nebius.chat_json retrying after truncation at max_tokens=%s", max_tokens
+        )
+        text, usage = chat(
+            messages,
+            model=model,
+            role=role,
+            temperature=0.0,
+            max_tokens=max_tokens * 2,
+            thinking=thinking,
+        )
     return parse_json_object(text), usage
 
 

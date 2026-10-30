@@ -21,9 +21,21 @@ from backend.services import nebius_client
 class FakeClient:
     """Minimal stand-in for openai.OpenAI."""
 
-    def __init__(self, content: str = '{"ok": true}', models=("model-a",), raises: Exception | None = None):
+    def __init__(
+        self,
+        content: str | None = '{"ok": true}',
+        models=("model-a",),
+        raises: Exception | None = None,
+        finish_reason: str = "stop",
+        reasoning: str | None = None,
+        script: list[dict] | None = None,
+    ):
         self._content = content
         self._raises = raises
+        self._finish_reason = finish_reason
+        self._reasoning = reasoning
+        # `script` replays a different reply per call, for retry tests.
+        self._script = list(script or [])
         self.calls: list[dict] = []
         self.chat = SimpleNamespace(completions=SimpleNamespace(create=self._create))
         self.models = SimpleNamespace(list=self._list_models)
@@ -33,8 +45,18 @@ class FakeClient:
         self.calls.append(kwargs)
         if self._raises:
             raise self._raises
+        content, finish = self._content, self._finish_reason
+        if self._script:
+            step = self._script.pop(0)
+            content = step.get("content", content)
+            finish = step.get("finish_reason", finish)
+        message = SimpleNamespace(
+            content=content,
+            reasoning_content=self._reasoning,
+            reasoning=self._reasoning,
+        )
         return SimpleNamespace(
-            choices=[SimpleNamespace(message=SimpleNamespace(content=self._content))],
+            choices=[SimpleNamespace(message=message, finish_reason=finish)],
             usage=SimpleNamespace(prompt_tokens=11, completion_tokens=22, total_tokens=33),
         )
 
@@ -135,3 +157,90 @@ def test_chat_json_returns_the_parsed_object(fake) -> None:
     payload, usage = nebius_client.chat_json([{"role": "user", "content": "hi"}])
     assert payload == {"ok": True}
     assert usage.total_tokens == 33
+
+
+# --------------------------------------------------------------------------
+# Hybrid thinking: extraction must not pay for a chain of thought
+# --------------------------------------------------------------------------
+
+
+def test_extraction_turns_thinking_off(fake) -> None:
+    """Nemotron writes to reasoning_content first; extraction wants the answer."""
+    nebius_client.chat([{"role": "user", "content": "hi"}], role="fast")
+    assert fake.calls[0]["extra_body"] == {"chat_template_kwargs": {"enable_thinking": False}}
+
+
+def test_reasoning_keeps_thinking_on(fake) -> None:
+    """Planning is the one place the chain of thought is the product."""
+    nebius_client.chat([{"role": "user", "content": "hi"}], role="reasoning")
+    assert "extra_body" not in fake.calls[0]
+
+
+def test_thinking_can_be_forced_either_way(fake) -> None:
+    nebius_client.chat([{"role": "user", "content": "hi"}], role="reasoning", thinking=False)
+    assert fake.calls[0]["extra_body"]["chat_template_kwargs"]["enable_thinking"] is False
+    nebius_client.chat([{"role": "user", "content": "hi"}], role="fast", thinking=True)
+    assert "extra_body" not in fake.calls[1]
+
+
+def test_reasoning_only_response_names_its_cause(monkeypatch) -> None:
+    """content=None with a full reasoning block is not 'the model said nothing'."""
+    client = FakeClient(content=None, reasoning="Let me think about this...", finish_reason="length")
+    monkeypatch.setattr(nebius_client, "get_settings", lambda: _settings())
+    monkeypatch.setattr(nebius_client, "_build_client", lambda: client)
+    with pytest.raises(UpstreamError) as exc:
+        nebius_client.chat([{"role": "user", "content": "hi"}])
+    assert exc.value.details["reason"] == "reasoning_only_response"
+    assert exc.value.details["reasoning_chars"] > 0
+
+
+def test_empty_response_names_its_cause(monkeypatch) -> None:
+    client = FakeClient(content="   ")
+    monkeypatch.setattr(nebius_client, "get_settings", lambda: _settings())
+    monkeypatch.setattr(nebius_client, "_build_client", lambda: client)
+    with pytest.raises(UpstreamError) as exc:
+        nebius_client.chat([{"role": "user", "content": "hi"}])
+    assert exc.value.details["reason"] == "empty_response"
+
+
+# --------------------------------------------------------------------------
+# Truncation: the measured failure mode of the small models
+# --------------------------------------------------------------------------
+
+
+def test_hitting_the_token_ceiling_is_reported_as_truncation(monkeypatch) -> None:
+    """Measured: Nano used 1195 of a 1200-token budget on a real email."""
+    client = FakeClient(content='{"summary": "half a sen', finish_reason="length")
+    monkeypatch.setattr(nebius_client, "get_settings", lambda: _settings())
+    monkeypatch.setattr(nebius_client, "_build_client", lambda: client)
+    with pytest.raises(UpstreamError) as exc:
+        nebius_client.chat([{"role": "user", "content": "hi"}], max_tokens=1200)
+    assert exc.value.details["reason"] == "output_truncated"
+    assert exc.value.details["max_tokens"] == 1200
+
+
+def test_truncated_json_is_retried_once_with_a_bigger_budget(monkeypatch) -> None:
+    client = FakeClient(
+        script=[
+            {"content": '{"summary": "half', "finish_reason": "length"},
+            {"content": '{"summary": "whole"}', "finish_reason": "stop"},
+        ]
+    )
+    monkeypatch.setattr(nebius_client, "get_settings", lambda: _settings())
+    monkeypatch.setattr(nebius_client, "_build_client", lambda: client)
+
+    payload, _usage = nebius_client.chat_json(
+        [{"role": "user", "content": "hi"}], max_tokens=1200
+    )
+    assert payload == {"summary": "whole"}
+    assert [c["max_tokens"] for c in client.calls] == [1200, 2400]
+
+
+def test_malformed_json_is_not_retried(monkeypatch) -> None:
+    """A complete-but-wrong answer is a wrong answer; asking again hides it."""
+    client = FakeClient(content='{"a": 1, "b": }')
+    monkeypatch.setattr(nebius_client, "get_settings", lambda: _settings())
+    monkeypatch.setattr(nebius_client, "_build_client", lambda: client)
+    with pytest.raises(UpstreamError):
+        nebius_client.chat_json([{"role": "user", "content": "hi"}])
+    assert len(client.calls) == 1
