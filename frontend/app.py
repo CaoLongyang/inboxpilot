@@ -213,9 +213,10 @@ def inject_css() -> None:
                  margin: 0; display: -webkit-box; -webkit-line-clamp: 2;
                  -webkit-box-orient: vertical; overflow: hidden; }}
   .ip-dot {{ color: #2f81f7; margin-right: 4px; }}
-  .ip-badge {{ display: inline-block; padding: 2px 10px; border-radius: 999px;
-               font-size: 0.76rem; font-weight: 600; letter-spacing: .02em;
+  .ip-badge {{ display: inline-block; padding: 2px 11px; border-radius: 999px;
+               font-size: 0.8rem; font-weight: 600; letter-spacing: .02em;
                border: 1px solid transparent; white-space: nowrap; }}
+  .ip-badge-lg {{ font-size: 0.95rem; font-weight: 700; padding: 5px 16px; }}
   .ip-quote {{ font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
                font-size: 0.85rem; line-height: 1.55; white-space: pre-wrap;
                background: {p['quote_bg']}; border-left: 3px solid {p['quote_bar']};
@@ -257,10 +258,13 @@ def inject_css() -> None:
     )
 
 
-def badge(text: str, tone: str = "gray") -> str:
+def badge(text: str, tone: str = "gray", *, large: bool = False) -> str:
+    """A pill. ``large`` is for the analysis header chips, which are the first
+    thing a reader scans: "Information only · 2 facts · 0 action items"."""
     bg, fg, border = _PALETTE[_theme()][tone]
+    cls = "ip-badge ip-badge-lg" if large else "ip-badge"
     return (
-        f'<span class="ip-badge" style="background:{bg};color:{fg};'
+        f'<span class="{cls}" style="background:{bg};color:{fg};'
         f'border-color:{border}">{html.escape(text)}</span>'
     )
 
@@ -305,16 +309,16 @@ def chips(
     add the status badge when the category has not already said it.
     """
     label_text, tone = _category_tone(category)
-    parts = [badge(label_text, tone)]
+    parts = [badge(label_text, tone, large=True)]
     status = "action required" if needs_action else "no action needed"
     implied = {"action_required": "action required",
                "information_only": "no action needed"}.get(category)
     if implied != status:
-        parts.append(badge(status, "amber" if needs_action else "gray"))
+        parts.append(badge(status, "amber" if needs_action else "gray", large=True))
     if facts is not None:
-        parts.append(badge(f"{facts} facts", "gray"))
+        parts.append(badge(f"{facts} facts", "gray", large=True))
     if actions is not None:
-        parts.append(badge(f"{actions} action items", "gray"))
+        parts.append(badge(f"{actions} action items", "gray", large=True))
     return " ".join(parts)
 
 
