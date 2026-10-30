@@ -18,7 +18,6 @@ import json
 import logging
 import time
 from typing import Any
-
 from backend.config import get_settings
 from backend.errors import ConfigError, UpstreamError
 from backend.schemas import ModelUsage
@@ -68,6 +67,8 @@ def chat(
     role: str = "fast",
     temperature: float = 0.0,
     max_tokens: int = 1200,
+    thinking: bool | None = None,
+    response_format: dict | None = None,
 ) -> tuple[str, ModelUsage]:
     """One chat completion. Returns (text, usage)."""
     settings = get_settings()
@@ -80,15 +81,33 @@ def chat(
             details={"expected_env_var": f"NEBIUS_MODEL_{role.upper()}"},
         )
 
+    params: dict[str, Any] = {
+        "model": chosen,
+        "messages": messages,
+        "temperature": temperature,
+        "max_tokens": max_tokens,
+    }
+
+    if response_format is not None:
+        params["response_format"] = response_format
+
+    use_thinking = (role == "reasoning") if thinking is None else thinking
+
+    if not use_thinking:
+        params["extra_body"] = {
+            "chat_template_kwargs": {"enable_thinking": False}
+        }
+
     client = _build_client()
     started = time.perf_counter()
+
     try:
-        completion = client.chat.completions.create(
-            model=chosen,
-            messages=messages,
-            temperature=temperature,
-            max_tokens=max_tokens,
-        )
+        completion = client.chat.completions.create(**params)
+    except Exception as exc:
+        raise UpstreamError(
+            "The model call failed",
+            details={"model": chosen, "reason": str(exc)},
+        ) from exc
     except Exception as exc:  # noqa: BLE001 - third party
         raise UpstreamError(
             "The model call failed",
@@ -111,7 +130,25 @@ def chat(
         meta.latency_ms,
         meta.total_tokens,
     )
-    text = (completion.choices[0].message.content or "").strip()
+    choice = completion.choices[0]
+    text = (choice.message.content or "").strip()
+
+    if not text:
+        raise UpstreamError(
+            "The model returned no answer text",
+            details={"model": chosen, "reason": "empty_response"},
+        )
+
+    if getattr(choice, "finish_reason", None) == "length":
+        raise UpstreamError(
+            "The model ran out of output tokens",
+            details={
+                "model": chosen,
+                "reason": "output_truncated",
+                "max_tokens": max_tokens,
+            },
+        )
+
     return text, meta
 
 
@@ -144,11 +181,30 @@ def chat_json(
     *,
     model: str | None = None,
     role: str = "fast",
-    max_tokens: int = 1200,
+    max_tokens: int = 4000,
+    thinking: bool | None = None,
 ) -> tuple[dict[str, Any], ModelUsage]:
-    text, usage = chat(
-        messages, model=model, role=role, temperature=0.0, max_tokens=max_tokens
-    )
+
+    def call(limit: int):
+        return chat(
+            messages,
+            model=model,
+            role=role,
+            temperature=0.0,
+            max_tokens=limit,
+            thinking=thinking,
+            response_format={"type": "json_object"},
+        )
+
+    try:
+        text, usage = call(max_tokens)
+    except UpstreamError as exc:
+        if exc.details.get("reason") != "output_truncated":
+            raise
+
+        log.warning("Retrying JSON generation after truncation")
+        text, usage = call(max_tokens * 2)
+
     return parse_json_object(text), usage
 
 
