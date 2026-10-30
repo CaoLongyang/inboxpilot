@@ -177,7 +177,9 @@ _PALETTE = {
         "muted": "#8b949e",
         "quote_bg": "rgba(139,148,158,.10)",
         "quote_bar": "rgba(139,148,158,.45)",
-        "panel_bg": "rgba(139,148,158,.09)",
+        "panel_bg": "rgba(139,148,158,.13)",
+        "summary_bg": "rgba(88,166,255,.07)",
+        "summary_bar": "#58a6ff",
         "task_bg": "rgba(210,153,34,.10)",
         "task_bar": "#d29922",
     },
@@ -190,7 +192,9 @@ _PALETTE = {
         "muted": "#57606a",
         "quote_bg": "rgba(87,96,106,.07)",
         "quote_bar": "rgba(87,96,106,.35)",
-        "panel_bg": "rgba(87,96,106,.06)",
+        "panel_bg": "rgba(87,96,106,.09)",
+        "summary_bg": "rgba(9,105,218,.05)",
+        "summary_bar": "#0969da",
         "task_bg": "rgba(154,103,0,.08)",
         "task_bar": "#9a6700",
     },
@@ -209,38 +213,44 @@ def inject_css() -> None:
                  margin: 0; display: -webkit-box; -webkit-line-clamp: 2;
                  -webkit-box-orient: vertical; overflow: hidden; }}
   .ip-dot {{ color: #2f81f7; margin-right: 4px; }}
-  .ip-badge {{ display: inline-block; padding: 1px 9px; border-radius: 999px;
-               font-size: 0.71rem; font-weight: 600; letter-spacing: .02em;
+  .ip-badge {{ display: inline-block; padding: 2px 10px; border-radius: 999px;
+               font-size: 0.76rem; font-weight: 600; letter-spacing: .02em;
                border: 1px solid transparent; white-space: nowrap; }}
   .ip-quote {{ font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-               font-size: 0.79rem; line-height: 1.5; white-space: pre-wrap;
+               font-size: 0.85rem; line-height: 1.55; white-space: pre-wrap;
                background: {p['quote_bg']}; border-left: 3px solid {p['quote_bar']};
-               padding: 8px 12px; border-radius: 6px; margin: 4px 0 10px 0; }}
-  .ip-label {{ font-size: 0.85rem; text-transform: uppercase; letter-spacing: .09em;
-               color: inherit; opacity: .82; margin: 22px 0 8px 0; font-weight: 700;
-               padding-left: 9px; border-left: 3px solid {p['quote_bar']}; }}
-  .ip-empty {{ font-size: 0.88rem; color: {p['muted']}; font-style: italic; }}
+               padding: 9px 13px; border-radius: 6px; margin: 6px 0 12px 0; }}
+  /* Section headings are bands, not captions: a tinted strip with an accent
+     bar. At 0.74rem grey text they read as fine print and the sections
+     blurred into one another. */
+  .ip-label {{ font-size: 0.92rem; text-transform: uppercase; letter-spacing: .08em;
+               color: inherit; margin: 26px 0 10px 0; font-weight: 800;
+               padding: 6px 12px; background: {p['panel_bg']};
+               border-left: 4px solid {p['quote_bar']};
+               border-radius: 0 6px 6px 0; }}
+  .ip-empty {{ font-size: 0.95rem; color: {p['muted']}; font-style: italic; }}
 
-  /* The summary is the headline of the analysis: it gets a panel and real
-     body size, not a caption under a label. */
-  .ip-summary {{ font-size: 1.12rem; line-height: 1.7; padding: 12px 16px;
-                 background: {p['panel_bg']}; border-radius: 8px;
-                 margin: 0 0 4px 0; }}
-  .ip-fact {{ display: flex; gap: 10px; align-items: baseline;
-              font-size: 1.05rem; line-height: 1.6; padding: 7px 0; }}
+  /* The summary is the headline of the analysis: blue spine, its own tint,
+     and larger than anything else on the page. */
+  .ip-summary {{ font-size: 1.3rem; line-height: 1.75; padding: 16px 20px;
+                 background: {p['summary_bg']};
+                 border-left: 4px solid {p['summary_bar']};
+                 border-radius: 0 10px 10px 0; margin: 0 0 4px 0; }}
+  .ip-fact {{ display: flex; gap: 11px; align-items: baseline;
+              font-size: 1.12rem; line-height: 1.6; padding: 8px 0; }}
   .ip-fact-text {{ flex: 1; }}
 
   /* A to-do is the point of the product, so it is the loudest element:
      amber spine, its own background, title larger than body text. */
-  .ip-task {{ border-left: 3px solid {p['task_bar']}; background: {p['task_bg']};
-              border-radius: 0 8px 8px 0; padding: 13px 16px; margin: 0 0 11px 0; }}
-  .ip-task-title {{ font-size: 1.1rem; font-weight: 700; line-height: 1.45; }}
-  .ip-task-why {{ font-size: 0.96rem; line-height: 1.6; color: {p['muted']};
-                  margin-top: 4px; }}
-  .ip-task-meta {{ font-size: 0.93rem; font-weight: 600; margin-top: 8px; }}
+  .ip-task {{ border-left: 4px solid {p['task_bar']}; background: {p['task_bg']};
+              border-radius: 0 10px 10px 0; padding: 16px 20px; margin: 0 0 12px 0; }}
+  .ip-task-title {{ font-size: 1.25rem; font-weight: 700; line-height: 1.45; }}
+  .ip-task-why {{ font-size: 1rem; line-height: 1.6; color: {p['muted']};
+                  margin-top: 5px; }}
+  .ip-task-meta {{ font-size: 0.98rem; font-weight: 600; margin-top: 9px; }}
   .ip-task-meta span {{ font-weight: 400; color: {p['muted']}; }}
-  .ip-task-note {{ font-size: 0.9rem; line-height: 1.55; color: {p['muted']};
-                   margin-top: 5px; }}
+  .ip-task-note {{ font-size: 0.93rem; line-height: 1.55; color: {p['muted']};
+                   margin-top: 6px; }}
 </style>
 """,
         unsafe_allow_html=True,
@@ -277,10 +287,11 @@ def label(text: str, accent: str = "neutral") -> str:
     task cards below it, so the eye can find the to-do section without reading.
     """
     palette = _PALETTE[_theme()]
-    colour = palette["task_bar"] if accent == "amber" else palette["quote_bar"]
-    return (
-        f'<div class="ip-label" style="border-left-color:{colour}">{esc(text)}</div>'
-    )
+    if accent == "amber":
+        style = f"border-left-color:{palette['task_bar']};background:{palette['task_bg']}"
+    else:
+        style = f"border-left-color:{palette['quote_bar']}"
+    return f'<div class="ip-label" style="{style}">{esc(text)}</div>'
 
 
 def chips(
