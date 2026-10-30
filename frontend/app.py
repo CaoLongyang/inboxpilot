@@ -177,6 +177,9 @@ _PALETTE = {
         "muted": "#8b949e",
         "quote_bg": "rgba(139,148,158,.10)",
         "quote_bar": "rgba(139,148,158,.45)",
+        "panel_bg": "rgba(139,148,158,.09)",
+        "task_bg": "rgba(210,153,34,.10)",
+        "task_bar": "#d29922",
     },
     "light": {
         "green": ("rgba(26,127,55,.10)", "#1a7f37", "rgba(26,127,55,.35)"),
@@ -187,6 +190,9 @@ _PALETTE = {
         "muted": "#57606a",
         "quote_bg": "rgba(87,96,106,.07)",
         "quote_bar": "rgba(87,96,106,.35)",
+        "panel_bg": "rgba(87,96,106,.06)",
+        "task_bg": "rgba(154,103,0,.08)",
+        "task_bar": "#9a6700",
     },
 }
 
@@ -210,11 +216,31 @@ def inject_css() -> None:
                font-size: 0.79rem; line-height: 1.5; white-space: pre-wrap;
                background: {p['quote_bg']}; border-left: 3px solid {p['quote_bar']};
                padding: 8px 12px; border-radius: 6px; margin: 4px 0 10px 0; }}
-  .ip-label {{ font-size: 0.74rem; text-transform: uppercase; letter-spacing: .06em;
-               color: {p['muted']}; margin: 14px 0 4px 0; font-weight: 600; }}
-  .ip-empty {{ font-size: 0.86rem; color: {p['muted']}; font-style: italic; }}
-  div[data-testid="stVerticalBlockBorderWrapper"] div[data-testid="stVerticalBlock"]
-      {{ gap: 0.35rem; }}
+  .ip-label {{ font-size: 0.85rem; text-transform: uppercase; letter-spacing: .09em;
+               color: inherit; opacity: .82; margin: 22px 0 8px 0; font-weight: 700;
+               padding-left: 9px; border-left: 3px solid {p['quote_bar']}; }}
+  .ip-empty {{ font-size: 0.88rem; color: {p['muted']}; font-style: italic; }}
+
+  /* The summary is the headline of the analysis: it gets a panel and real
+     body size, not a caption under a label. */
+  .ip-summary {{ font-size: 1.12rem; line-height: 1.7; padding: 12px 16px;
+                 background: {p['panel_bg']}; border-radius: 8px;
+                 margin: 0 0 4px 0; }}
+  .ip-fact {{ display: flex; gap: 10px; align-items: baseline;
+              font-size: 1.05rem; line-height: 1.6; padding: 7px 0; }}
+  .ip-fact-text {{ flex: 1; }}
+
+  /* A to-do is the point of the product, so it is the loudest element:
+     amber spine, its own background, title larger than body text. */
+  .ip-task {{ border-left: 3px solid {p['task_bar']}; background: {p['task_bg']};
+              border-radius: 0 8px 8px 0; padding: 13px 16px; margin: 0 0 11px 0; }}
+  .ip-task-title {{ font-size: 1.1rem; font-weight: 700; line-height: 1.45; }}
+  .ip-task-why {{ font-size: 0.96rem; line-height: 1.6; color: {p['muted']};
+                  margin-top: 4px; }}
+  .ip-task-meta {{ font-size: 0.93rem; font-weight: 600; margin-top: 8px; }}
+  .ip-task-meta span {{ font-weight: 400; color: {p['muted']}; }}
+  .ip-task-note {{ font-size: 0.9rem; line-height: 1.55; color: {p['muted']};
+                   margin-top: 5px; }}
 </style>
 """,
         unsafe_allow_html=True,
@@ -234,7 +260,96 @@ def quote_block(text: str) -> str:
 
 
 def esc(value: Any) -> str:
-    return html.escape(str(value or ""))
+    """Escape for HTML, undoing any entity escaping that is already there.
+
+    Gmail returns snippets and subjects with entities baked in (``Gmail -&gt;
+    Drafts``), and the model sometimes copies them. Escaping those directly
+    double-escapes them, so the user reads ``&gt;`` on screen. Unescaping first
+    and escaping once is idempotent and still neutralises real markup.
+    """
+    return html.escape(html.unescape(str(value or "")))
+
+
+def label(text: str, accent: str = "neutral") -> str:
+    """Section heading: readable, not a whisper.
+
+    ``accent="amber"`` ties the "Action items" heading to the amber spine of the
+    task cards below it, so the eye can find the to-do section without reading.
+    """
+    palette = _PALETTE[_theme()]
+    colour = palette["task_bar"] if accent == "amber" else palette["quote_bar"]
+    return (
+        f'<div class="ip-label" style="border-left-color:{colour}">{esc(text)}</div>'
+    )
+
+
+def chips(
+    category: str, needs_action: bool,
+    facts: int | None = None, actions: int | None = None,
+) -> str:
+    """Badge row for one analysis.
+
+    The category badge can already say "Action required", and the status badge
+    says the same thing — two identical pills side by side read as a bug. Only
+    add the status badge when the category has not already said it.
+    """
+    label_text, tone = _category_tone(category)
+    parts = [badge(label_text, tone)]
+    status = "action required" if needs_action else "no action needed"
+    implied = {"action_required": "action required",
+               "information_only": "no action needed"}.get(category)
+    if implied != status:
+        parts.append(badge(status, "amber" if needs_action else "gray"))
+    if facts is not None:
+        parts.append(badge(f"{facts} facts", "gray"))
+    if actions is not None:
+        parts.append(badge(f"{actions} action items", "gray"))
+    return " ".join(parts)
+
+
+def summary_block(text: str) -> str:
+    """The summary is the headline of the analysis, so it renders as a panel."""
+    return f'<div class="ip-summary">{esc(text)}</div>'
+
+
+def fact_block(fact: dict) -> str:
+    """One key fact: kind badge plus the claim, at body size."""
+    kind = (fact.get("kind") or "unknown").upper()
+    tone = {"EXPLICIT": "green", "INFERENCE": "amber"}.get(kind, "gray")
+    return (
+        f'<div class="ip-fact">{badge(kind.lower(), tone)}'
+        f'<span class="ip-fact-text">{esc(fact.get("text"))}</span></div>'
+    )
+
+
+def task_block(action: dict) -> str:
+    """One action item as a card.
+
+    The to-do is the reason the product exists, so it is the loudest thing on
+    the page: an amber spine, its own background, a title at body size. It used
+    to be a bold sentence followed by two captions, which read as a footnote.
+    """
+    parts = ['<div class="ip-task">']
+    parts.append(f'<div class="ip-task-title">{esc(action.get("title") or "Untitled")}</div>')
+    if action.get("why"):
+        parts.append(f'<div class="ip-task-why">{esc(action["why"])}</div>')
+
+    deadline = action.get("deadline") or {}
+    stamp = deadline.get("date") or deadline.get("text")
+    if stamp:
+        kind = deadline.get("kind") or "unknown"
+        parts.append(
+            f'<div class="ip-task-meta">Due {esc(stamp)} <span>({esc(kind)})</span></div>'
+        )
+    if action.get("risk"):
+        parts.append(f'<div class="ip-task-note">If ignored: {esc(action["risk"])}</div>')
+    needs = action.get("needs_user_input") or []
+    if needs:
+        parts.append(
+            f'<div class="ip-task-note">Needs your input: {esc("; ".join(needs))}</div>'
+        )
+    parts.append("</div>")
+    return "".join(parts)
 
 
 def go(page: str) -> None:
@@ -446,8 +561,8 @@ def _email_row(item: dict, analysis: dict | None) -> None:
             tags = ""
             if analysis:
                 category = analysis.get("analysis", {}).get("category", "")
-                label, tone = _category_tone(category)
-                tags = " " + badge(label, tone)
+                category_label, tone = _category_tone(category)
+                tags = " " + badge(category_label, tone)
             st.markdown(
                 f'<div class="ip-subject">{dot}{esc(subject)}{tags}</div>'
                 f'<div class="ip-meta">{esc(_sender(item))} &nbsp;·&nbsp; {esc(_when(item))}</div>'
@@ -455,9 +570,10 @@ def _email_row(item: dict, analysis: dict | None) -> None:
                 unsafe_allow_html=True,
             )
         with action_col:
-            label = "Re-analyze" if analysis else "Analyze"
+            button_label = "Re-analyze" if analysis else "Analyze"
             if st.button(
-                label, key=f"an_{message_id}", type="primary" if not analysis else "secondary",
+                button_label, key=f"an_{message_id}",
+                type="primary" if not analysis else "secondary",
                 use_container_width=True,
             ):
                 with st.spinner("Nemotron is reading this email..."):
@@ -473,64 +589,45 @@ def _analysis_card(item: dict, response: dict) -> None:
     usage = response.get("usage") or {}
     subject = item.get("subject") or "(no subject)"
     category = analysis.get("category", "")
-    label, tone = _category_tone(category)
+    category_label = _category_tone(category)[0]
     needs_action = bool(analysis.get("action_required"))
     facts = analysis.get("key_facts", []) or []
     actions = analysis.get("action_items", []) or []
 
     header = (
-        f"{subject}  ·  {label}"
+        f"{subject}  ·  {category_label}"
         + ("  ·  needs a reply" if needs_action else "")
     )
     with st.expander(header, expanded=False):
         st.markdown(
-            badge(label, tone)
-            + " "
-            + (badge("action required", "amber") if needs_action
-               else badge("no action needed", "gray"))
-            + " "
-            + badge(f"{len(facts)} facts", "gray")
-            + " "
-            + badge(f"{len(actions)} action items", "gray"),
+            chips(category, needs_action, len(facts), len(actions)),
             unsafe_allow_html=True,
         )
-        st.markdown(f'<div class="ip-label">Summary</div>{esc(analysis.get("summary", ""))}',
-                    unsafe_allow_html=True)
+        st.markdown(
+            label("Summary") + summary_block(analysis.get("summary", "")),
+            unsafe_allow_html=True,
+        )
 
-        st.markdown('<div class="ip-label">Key facts</div>', unsafe_allow_html=True)
+        st.markdown(label("Key facts"), unsafe_allow_html=True)
         if facts:
             for fact in facts:
-                kind = (fact.get("kind") or "unknown").upper()
-                tone_for_kind = {"EXPLICIT": "green", "INFERENCE": "amber"}.get(kind, "gray")
-                st.markdown(
-                    f"{badge(kind.lower(), tone_for_kind)} &nbsp;{esc(fact.get('text', ''))}",
-                    unsafe_allow_html=True,
-                )
+                st.markdown(fact_block(fact), unsafe_allow_html=True)
                 for evidence in fact.get("evidence", []) or []:
                     st.markdown(quote_block(evidence.get("quote", "")), unsafe_allow_html=True)
         else:
             st.markdown('<p class="ip-empty">No key facts extracted.</p>',
                         unsafe_allow_html=True)
 
-        st.markdown('<div class="ip-label">Action items</div>', unsafe_allow_html=True)
+        st.markdown(label("Action items", "amber"), unsafe_allow_html=True)
         if actions:
             for action in actions:
-                st.markdown(f"**{esc(action.get('title', 'Untitled'))}** — {esc(action.get('why', ''))}",
-                            unsafe_allow_html=True)
-                deadline = action.get("deadline") or {}
-                if deadline.get("date") or deadline.get("text"):
-                    st.caption(
-                        f"Deadline: {deadline.get('date') or deadline.get('text')} "
-                        f"({deadline.get('kind', 'unknown')})"
-                    )
-                if action.get("risk"):
-                    st.caption(f"Risk if ignored: {action['risk']}")
+                st.markdown(task_block(action), unsafe_allow_html=True)
         else:
             st.markdown('<p class="ip-empty">No actionable tasks identified.</p>',
                         unsafe_allow_html=True)
 
         if analysis.get("uncertainties"):
-            st.markdown('<div class="ip-label">Uncertainties</div>', unsafe_allow_html=True)
+            st.markdown(label("Uncertainties"), unsafe_allow_html=True)
             for unknown in analysis["uncertainties"]:
                 st.markdown(f"- {esc(unknown)}", unsafe_allow_html=True)
 
@@ -691,50 +788,32 @@ def show_analysis() -> None:
 
     analysis = response.get("analysis", {})
     usage = response.get("usage") or {}
-    label, tone = _category_tone(analysis.get("category", ""))
     st.markdown(
-        badge(label, tone)
-        + " "
-        + (badge("action required", "amber") if analysis.get("action_required")
-           else badge("no action needed", "gray")),
+        chips(analysis.get("category", ""), bool(analysis.get("action_required"))),
         unsafe_allow_html=True,
     )
-    st.markdown(f'<div class="ip-label">Summary</div>{esc(analysis.get("summary", ""))}',
-                unsafe_allow_html=True)
+    st.markdown(
+        label("Summary") + summary_block(analysis.get("summary", "")),
+        unsafe_allow_html=True,
+    )
 
-    st.markdown('<div class="ip-label">Key facts</div>', unsafe_allow_html=True)
+    st.markdown(label("Key facts"), unsafe_allow_html=True)
     for fact in analysis.get("key_facts", []):
-        kind = (fact.get("kind") or "unknown").upper()
-        tone_for_kind = {"EXPLICIT": "green", "INFERENCE": "amber"}.get(kind, "gray")
-        st.markdown(
-            f"{badge(kind.lower(), tone_for_kind)} &nbsp;{esc(fact.get('text', ''))}",
-            unsafe_allow_html=True,
-        )
+        st.markdown(fact_block(fact), unsafe_allow_html=True)
         with st.expander("Show the quoted source"):
             display_evidence(fact.get("evidence", []))
     if not analysis.get("key_facts"):
         st.markdown('<p class="ip-empty">No key facts extracted.</p>', unsafe_allow_html=True)
 
-    st.markdown('<div class="ip-label">Action items</div>', unsafe_allow_html=True)
+    st.markdown(label("Action items", "amber"), unsafe_allow_html=True)
     for action in analysis.get("action_items", []):
-        st.markdown(f"**{esc(action.get('title', 'Untitled'))}** — {esc(action.get('why', ''))}",
-                    unsafe_allow_html=True)
-        deadline = action.get("deadline") or {}
-        if deadline.get("date") or deadline.get("text"):
-            st.caption(
-                f"Deadline: {deadline.get('date') or deadline.get('text')} "
-                f"({deadline.get('kind', 'unknown')})"
-            )
-        if action.get("risk"):
-            st.caption(f"Risk if ignored: {action['risk']}")
-        if action.get("needs_user_input"):
-            st.info("Needs your input: " + "; ".join(action["needs_user_input"]))
+        st.markdown(task_block(action), unsafe_allow_html=True)
     if not analysis.get("action_items"):
         st.markdown('<p class="ip-empty">No actionable tasks identified.</p>',
                     unsafe_allow_html=True)
 
     if analysis.get("uncertainties"):
-        st.markdown('<div class="ip-label">Uncertainties</div>', unsafe_allow_html=True)
+        st.markdown(label("Uncertainties"), unsafe_allow_html=True)
         for unknown in analysis["uncertainties"]:
             st.markdown(f"- {esc(unknown)}", unsafe_allow_html=True)
     if analysis.get("risk_summary"):
