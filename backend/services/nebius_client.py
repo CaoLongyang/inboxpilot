@@ -73,12 +73,24 @@ def _thinking_default(role: str) -> bool:
     so an extraction call can burn its whole `max_tokens` budget thinking and
     return `content=None`. Measured on `nemotron-3-super-120b-a12b`:
     2793ms / 140 tokens with thinking, 1088ms / 81 tokens without.
+
+    Reading an image is extraction too: the timetable is either legible or it
+    is not, and thinking about it does not make it more legible.
     """
     return role == "reasoning"
 
 
+def _model_for(role: str) -> str:
+    settings = get_settings()
+    if role == "reasoning":
+        return settings.nebius_model_reasoning
+    if role == "vision":
+        return settings.nebius_model_vision
+    return settings.nebius_model_fast
+
+
 def chat(
-    messages: list[dict[str, str]],
+    messages: list[dict[str, Any]],
     *,
     model: str | None = None,
     role: str = "fast",
@@ -89,9 +101,7 @@ def chat(
 ) -> tuple[str, ModelUsage]:
     """One chat completion. Returns (text, usage)."""
     settings = get_settings()
-    chosen = model or (
-        settings.nebius_model_reasoning if role == "reasoning" else settings.nebius_model_fast
-    )
+    chosen = model or _model_for(role)
     if not chosen:
         raise ConfigError(
             "No Nebius model configured",
@@ -208,7 +218,7 @@ def parse_json_object(text: str) -> dict[str, Any]:
 
 
 def chat_json(
-    messages: list[dict[str, str]],
+    messages: list[dict[str, Any]],
     *,
     model: str | None = None,
     role: str = "fast",

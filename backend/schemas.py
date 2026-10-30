@@ -348,6 +348,33 @@ class OpportunityRequest(APIModel):
     message_id: str = Field(min_length=1)
 
 
+class TimetableImportRequest(APIModel):
+    """A photo or screenshot of a weekly timetable."""
+
+    image_base64: str = Field(
+        min_length=16,
+        description="Raw base64 of the image, without a data: prefix",
+    )
+    media_type: str = Field(default="image/png")
+
+
+class TimetableImport(APIModel):
+    """What the vision model read out of the image.
+
+    Nothing is saved here: the blocks are returned so the user can check them
+    in the editor before they become the timetable every verdict is computed
+    against.
+    """
+
+    busy_blocks: list[BusyBlock] = Field(default_factory=list)
+    skipped: list[str] = Field(
+        default_factory=list,
+        description="Rows the model saw that could not be turned into a time block",
+    )
+    notes: str = ""
+    usage: ModelUsage | None = None
+
+
 # --------------------------------------------------------------------------
 # Infrastructure
 # --------------------------------------------------------------------------

@@ -66,6 +66,13 @@ the verdict table are Python (`backend/services/schedule.py`,
 clashes with, and a hostile email cannot talk its way into "you must attend" —
 at worst it inflates a score that is clamped to 5 and printed with its reasons.
 
+**Filling in the week takes one photo.** Upload a screenshot of a university
+timetable and `nvidia/Nemotron-3.5-Super-VL` reads the grid into blocks, which
+land in the editor for review before they are saved. Rows it cannot read
+(`25:00`, an unknown day) are dropped and named rather than turned into a
+commitment, because a misread timetable would quietly corrupt every later
+verdict.
+
 ## Architecture
 
 ```
@@ -171,10 +178,12 @@ if Nebius is unreachable, the app reports an error instead of inventing output.
 |---|---|---|
 | `nvidia/nemotron-3-super-120b-a12b` | Read one email: category, key facts with quotes, action items, uncertainties | Highest measured JSON reliability at the latency we can afford |
 | `nvidia/Nemotron-3-Ultra-550b-a55b` | Decide whether a reply is warranted and write it | Multi-step judgement (who sent it, what is being asked, what we do not know) |
+| `nvidia/Nemotron-3.5-Super-VL` | Read a photo of a weekly timetable into busy blocks | A timetable is a grid; a VLM reads the layout that OCR throws away |
 
-Both are NVIDIA Nemotron models served by Nebius. The model IDs are
-configuration (`NEBIUS_MODEL_FAST` / `NEBIUS_MODEL_REASONING`), so the split is
-visible in `.env.example` rather than buried in code.
+All three are NVIDIA Nemotron models served by Nebius. The model IDs are
+configuration (`NEBIUS_MODEL_FAST` / `NEBIUS_MODEL_REASONING` /
+`NEBIUS_MODEL_VISION`), so the split is visible in `.env.example` rather than
+buried in code.
 
 ### What we had to measure to make it fast
 

@@ -39,6 +39,10 @@ class Settings(BaseSettings):
     nebius_base_url: str = "https://api.tokenfactory.nebius.com/v1/"
     nebius_model_fast: str = ""
     nebius_model_reasoning: str = ""
+    # Third role, for reading a photo of a timetable. A vision-language model
+    # rather than OCR: a university timetable is a grid, and a VLM reads the
+    # grid, not a pile of unrelated words.
+    nebius_model_vision: str = "nvidia/Nemotron-3.5-Super-VL"
     nebius_timeout_seconds: float = 60.0
     nebius_max_retries: int = 2
 

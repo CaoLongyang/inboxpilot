@@ -16,8 +16,14 @@ import logging
 
 from fastapi import APIRouter
 
-from backend.schemas import OpportunityAssessment, OpportunityRequest, ScheduleProfile
-from backend.services import store, triage
+from backend.schemas import (
+    OpportunityAssessment,
+    OpportunityRequest,
+    ScheduleProfile,
+    TimetableImport,
+    TimetableImportRequest,
+)
+from backend.services import store, timetable, triage
 
 log = logging.getLogger(__name__)
 
@@ -44,3 +50,14 @@ def put_schedule(profile: ScheduleProfile) -> ScheduleProfile:
 def assess_opportunity(request: OpportunityRequest) -> OpportunityAssessment:
     """Decide whether an invitation is worth attending, given the user's week."""
     return triage.assess(request.message_id)
+
+
+@router.post("/schedule/import", response_model=TimetableImport)
+def import_timetable(request: TimetableImportRequest) -> TimetableImport:
+    """Read a photo of a timetable into proposed busy blocks.
+
+    Returns the blocks; it does not save them. The user checks them in the
+    editor first, because a misread timetable would quietly corrupt every
+    "should I attend" answer afterwards.
+    """
+    return timetable.extract(request.image_base64, request.media_type)

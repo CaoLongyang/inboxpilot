@@ -23,6 +23,7 @@ approved.
 """
 from __future__ import annotations
 
+import base64
 import html
 import os
 import re
@@ -1030,6 +1031,85 @@ def show_analysis() -> None:
 _HHMM = re.compile(r"^([01]\d|2[0-3]):[0-5]\d$")
 
 
+def _guess_media(name: str) -> str:
+    lowered = (name or "").lower()
+    for extension, media in (
+        (".png", "image/png"),
+        (".jpg", "image/jpeg"),
+        (".jpeg", "image/jpeg"),
+        (".webp", "image/webp"),
+    ):
+        if lowered.endswith(extension):
+            return media
+    return "image/png"
+
+
+def _bump_week_version() -> None:
+    """Force the block editor to be rebuilt from the new data.
+
+    A data_editor keyed the same keeps its own edits; changing the key is the
+    reliable way to say "the underlying rows changed, start over".
+    """
+    st.session_state["week_version"] = st.session_state.get("week_version", 0) + 1
+
+
+def import_section(saved_blocks: list[dict], imported: list[dict] | None) -> None:
+    """Read a timetable out of a photo instead of typing every row."""
+    with st.expander(
+        "Import from a photo of your timetable",
+        expanded=not saved_blocks and not imported,
+    ):
+        st.caption(
+            "A screenshot from your university portal, or a photo of a printed "
+            "timetable. A vision model reads the grid: days across the top, times "
+            "inside the blocks. Nothing is saved until you press Save my week."
+        )
+        upload = st.file_uploader(
+            "Timetable image", type=["png", "jpg", "jpeg", "webp"], key="week_upload"
+        )
+        left, right = st.columns([1, 1])
+        read = left.button(
+            "Read this timetable",
+            type="primary",
+            disabled=upload is None,
+            use_container_width=True,
+        )
+        if imported and right.button("Discard import", use_container_width=True):
+            st.session_state.pop("imported_blocks", None)
+            st.session_state.pop("import_skipped", None)
+            _bump_week_version()
+            st.rerun()
+
+        if read and upload is not None:
+            media = upload.type or _guess_media(upload.name)
+            try:
+                with st.spinner("Reading the timetable..."):
+                    result = api_request(
+                        "POST", "/schedule/import",
+                        payload={
+                            "image_base64": base64.b64encode(upload.getvalue()).decode(),
+                            "media_type": media,
+                        },
+                        timeout=180.0,
+                    )
+            except APIError as exc:
+                if not stale_backend_hint(exc):
+                    error_message(exc)
+                return
+            st.session_state["imported_blocks"] = result.get("busy_blocks") or []
+            st.session_state["import_skipped"] = result.get("skipped") or []
+            _bump_week_version()
+            st.rerun()
+
+        if imported:
+            st.success(
+                f"{len(imported)} class(es) read from the image. Check them in the "
+                "table below, fix anything that looks wrong, then Save my week."
+            )
+        for line in st.session_state.get("import_skipped") or []:
+            st.warning(f"Could not use: {line}")
+
+
 def show_schedule() -> None:
     st.markdown("### My week")
     st.caption(
@@ -1045,6 +1125,9 @@ def show_schedule() -> None:
         return
 
     blocks = profile.get("busy_blocks") or []
+    imported = st.session_state.get("imported_blocks")
+    source = imported if imported else blocks
+
     frame = pd.DataFrame(
         [
             {
@@ -1053,10 +1136,12 @@ def show_schedule() -> None:
                 "To": block.get("end", ""),
                 "What": block.get("label", ""),
             }
-            for block in blocks
+            for block in source
         ],
         columns=["Day", "From", "To", "What"],
     )
+
+    import_section(blocks, imported)
 
     roles = ["student", "worker", "other"]
     role = profile.get("role") or "student"
@@ -1084,7 +1169,7 @@ def show_schedule() -> None:
                 "To": st.column_config.TextColumn("To (HH:MM)"),
                 "What": st.column_config.TextColumn("What (e.g. Algorithms lecture)"),
             },
-            key="week_editor",
+            key=f"week_editor_{st.session_state.get('week_version', 0)}",
         )
 
         notes_value = st.text_area(
@@ -1145,6 +1230,11 @@ def show_schedule() -> None:
                     )
                 # Every verdict computed against the old timetable is now stale.
                 st.session_state["assessments"] = {}
+                # The import has served its purpose; the saved profile is now the
+                # source of truth for the editor.
+                st.session_state.pop("imported_blocks", None)
+                st.session_state.pop("import_skipped", None)
+                _bump_week_version()
                 st.success(
                     f"Saved. {len(saved_profile.get('busy_blocks') or [])} busy "
                     "block(s) in your week."
@@ -1152,7 +1242,7 @@ def show_schedule() -> None:
             except APIError as exc:
                 error_message(exc)
 
-    if not blocks:
+    if not source:
         st.info(
             "No busy blocks yet. Without them, InboxPilot will not guess about a "
             "clash: it will ask you to fill this in first."
