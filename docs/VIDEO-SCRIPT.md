@@ -62,7 +62,7 @@
 
 ### 场景 3 ｜ 0:28 – 0:44 ｜ 收件箱
 
-**画面**：点 `Inbox`，十封邮件加载。鼠标移到某封的 `Analyze` 按钮上（不要点），然后点下去。转圈。
+**画面**：点 `Inbox`，十封邮件加载。注意**已经有分析的邮件直接显示分类徽章和「6 key facts · 0 action items」**——那是后台 watcher 提前读过的，打开就是结果，不用再点。鼠标移到某封的 `Analyze` 按钮上（不要点），然后点下去。转圈。
 
 > Here's the inbox — ten messages, each with its own Analyze button, so I can do
 > one or ten without leaving the list. This one is from a classmate, and it has
@@ -76,7 +76,7 @@
 
 ### 场景 4 ｜ 0:44 – 1:04 ｜ 证据（核心技术差异化）
 
-**画面**：结果出来后向下滚——summary 面板 → key facts（每条带引文和 `explicit` 徽章）→ action items 卡片。鼠标在**引文**上停留。
+**画面**：分析**就在这一行下面展开**，不需要滚到别处——summary 面板 → key facts（每条带引文和 `explicit` 徽章）→ action items 卡片。鼠标在**引文**上停留。这一段停留久一点，是全片技术差异化的核心。
 
 > Every claim carries a quote from the email and a label: explicit, inference,
 > or unknown. Then the backend checks that each explicit quote actually appears
@@ -86,6 +86,8 @@
 *中文对照：每条结论都带一句邮件原文引用和一个标签：explicit（明说）、inference（推断）、unknown（不确定）。后端会校验每句 explicit 引用是否真的出现在正文里。模型编的会被降级或丢掉。我们不信任模型——我们审计它。*
 
 **"audited" 是全片第二个记忆点**，重读。
+
+> 收尾前可以顺手点一下 `Hide analysis` 把它收起来，让镜头停在「摘要、facts 数、action items 数」那一行——这一下能同时说明「分析挂在邮件上」和「可以收起」。不加台词，纯动作，约 1 秒。
 
 ---
 
