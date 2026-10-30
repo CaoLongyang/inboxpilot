@@ -281,6 +281,17 @@ def inject_css() -> None:
                font-size: 0.8rem; font-weight: 600; letter-spacing: .02em;
                border: 1px solid transparent; white-space: nowrap; }}
   .ip-badge-lg {{ font-size: 0.95rem; font-weight: 700; padding: 5px 16px; }}
+  /* The line that survives collapsing. A folded card still has to answer "is
+     this one about me?", so the category and the counts sit beside the toggle
+     and never fold away — otherwise collapsing costs the reader the only thing
+     they were scanning for. */
+  .ip-glance {{ display: flex; flex-wrap: wrap; align-items: center; gap: 9px;
+                margin: 0; line-height: 2.4;
+                /* The toggle beside it is a button, whose box is taller than
+                   a line of text; centring the boxes still leaves the label
+                   sitting a few pixels high. Nudge the badges to meet it. */
+                position: relative; top: -8px; }}
+  .ip-glance-meta {{ font-size: 0.8rem; color: {p['muted']}; font-weight: 600; }}
   /* Digest deadlines: date first and fixed width, so the eye scans a column of
      dates rather than reading each row. */
   .ip-due {{ display: flex; align-items: baseline; gap: 14px;
@@ -599,6 +610,9 @@ def _analyze(message_id: str) -> tuple[bool, str]:
     except APIError as exc:
         return False, f"{exc.code}: {exc}"
     st.session_state.setdefault("analyses", {})[message_id] = response
+    # The card this just produced should be open when the list re-renders —
+    # the click was a request to see it, not to be told it exists.
+    st.session_state.setdefault("_expand_after", set()).add(message_id)
     # A fresh analysis invalidates any proposal derived from the old one.
     if st.session_state.get("message_id") == message_id:
         st.session_state.pop("plan_response", None)
@@ -746,7 +760,14 @@ def _apply_pending_selection(emails: list[dict]) -> None:
             st.session_state[f"sel_{item.get('id')}"] = True
 
 
-def _email_row(item: dict, analysis: dict | None) -> None:
+def _email_row(item: dict, analysis: dict | None, *, expand: bool = False) -> None:
+    """One email, and its analysis inside the same card.
+
+    The analysis used to render in a separate section below the whole list, so
+    clicking Analyze on the fifth email put the answer ten rows away from the
+    question. It now opens where it was asked for, and folds away again without
+    taking the category badge with it.
+    """
     message_id = item.get("id") or ""
     subject = item.get("subject") or "(no subject)"
     dot = '<span class="ip-dot">●</span>' if item.get("unread") else ""
@@ -763,13 +784,8 @@ def _email_row(item: dict, analysis: dict | None) -> None:
                 label_visibility="collapsed",
             )
         with body_col:
-            tags = ""
-            if analysis:
-                category = analysis.get("analysis", {}).get("category", "")
-                category_label, tone = _category_tone(category)
-                tags = " " + badge(category_label, tone)
             st.markdown(
-                f'<div class="ip-subject">{dot}{esc(subject)}{tags}</div>'
+                f'<div class="ip-subject">{dot}{esc(subject)}</div>'
                 f'<div class="ip-meta">{esc(_sender(item))} &nbsp;·&nbsp; {esc(_when(item))}</div>'
                 f'<div class="ip-snippet">{esc(snippet)}</div>',
                 unsafe_allow_html=True,
@@ -788,64 +804,103 @@ def _email_row(item: dict, analysis: dict | None) -> None:
                 else:
                     st.error(detail)
 
+        if analysis:
+            body = analysis.get("analysis", {})
+            # The open/closed state is ours, not st.expander's. An expander
+            # draws a second border inside the card, which reads as a box in a
+            # box, and its `expanded` argument is only a hint on first render —
+            # so the auto-open after analysing would not survive the next rerun.
+            open_key = f"open_{message_id}"
+            if expand and open_key not in st.session_state:
+                st.session_state[open_key] = True
+            is_open = bool(st.session_state.get(open_key, False))
 
-def _analysis_card(item: dict, response: dict) -> None:
-    analysis = response.get("analysis", {})
-    usage = response.get("usage") or {}
-    subject = item.get("subject") or "(no subject)"
+            glance_col, toggle_col = st.columns(
+                [5.4, 1.9], vertical_alignment="center"
+            )
+            glance_col.markdown(_analysis_glance(body), unsafe_allow_html=True)
+            if toggle_col.button(
+                "Hide analysis" if is_open else "Show analysis",
+                key=f"tg_{message_id}",
+                type="tertiary",
+                width="stretch",
+            ):
+                st.session_state[open_key] = not is_open
+                st.rerun()
+
+            if is_open:
+                _analysis_body(body, analysis, message_id)
+
+
+def _analysis_glance(analysis: dict) -> str:
+    """The summary line that stays visible when the detail is collapsed.
+
+    The badge and the counts are what the reader scans for; folding them away
+    with the prose would make a collapsed card indistinguishable from an
+    un-analysed one.
+    """
     category = analysis.get("category", "")
-    category_label = _category_tone(category)[0]
-    needs_action = bool(analysis.get("action_required"))
+    category_label, tone = _category_tone(category)
+    facts = analysis.get("key_facts") or []
+    actions = analysis.get("action_items") or []
+    parts = [badge(category_label, tone)]
+    if analysis.get("action_required"):
+        parts.append(badge("needs a reply", "amber"))
+    parts.append(
+        f'<span class="ip-glance-meta">{len(facts)} key facts · '
+        f"{len(actions)} action items</span>"
+    )
+    return f'<div class="ip-glance">{"".join(parts)}</div>'
+
+
+def _analysis_body(analysis: dict, response: dict, message_id: str) -> None:
+    """The detail, with no frame around it.
+
+    It lives inside the email's own card, so it is not boxed again — a box
+    inside a box reads as a rendering bug.
+    """
     facts = analysis.get("key_facts", []) or []
     actions = analysis.get("action_items", []) or []
+    usage = response.get("usage") or {}
 
-    header = (
-        f"{subject}  ·  {category_label}"
-        + ("  ·  needs a reply" if needs_action else "")
+    st.markdown(
+        label("Summary") + summary_block(analysis.get("summary", "")),
+        unsafe_allow_html=True,
     )
-    with st.expander(header, expanded=False):
-        st.markdown(
-            chips(category, needs_action, len(facts), len(actions)),
-            unsafe_allow_html=True,
-        )
-        st.markdown(
-            label("Summary") + summary_block(analysis.get("summary", "")),
-            unsafe_allow_html=True,
-        )
 
-        st.markdown(label("Key facts"), unsafe_allow_html=True)
-        if facts:
-            for fact in facts:
-                st.markdown(fact_block(fact), unsafe_allow_html=True)
-                for evidence in fact.get("evidence", []) or []:
-                    st.markdown(quote_block(evidence.get("quote", "")), unsafe_allow_html=True)
-        else:
-            st.markdown('<p class="ip-empty">No key facts extracted.</p>',
-                        unsafe_allow_html=True)
+    st.markdown(label("Key facts"), unsafe_allow_html=True)
+    if facts:
+        for fact in facts:
+            st.markdown(fact_block(fact), unsafe_allow_html=True)
+            for evidence in fact.get("evidence", []) or []:
+                st.markdown(quote_block(evidence.get("quote", "")), unsafe_allow_html=True)
+    else:
+        st.markdown('<p class="ip-empty">No key facts extracted.</p>',
+                    unsafe_allow_html=True)
 
-        st.markdown(label("Action items", "amber"), unsafe_allow_html=True)
-        if actions:
-            for action in actions:
-                st.markdown(task_block(action), unsafe_allow_html=True)
-        else:
-            st.markdown('<p class="ip-empty">No actionable tasks identified.</p>',
-                        unsafe_allow_html=True)
+    st.markdown(label("Action items", "amber"), unsafe_allow_html=True)
+    if actions:
+        for action in actions:
+            st.markdown(task_block(action), unsafe_allow_html=True)
+    else:
+        st.markdown('<p class="ip-empty">No actionable tasks identified.</p>',
+                    unsafe_allow_html=True)
 
-        if analysis.get("uncertainties"):
-            st.markdown(label("Uncertainties"), unsafe_allow_html=True)
-            for unknown in analysis["uncertainties"]:
-                st.markdown(f"- {esc(unknown)}", unsafe_allow_html=True)
+    if analysis.get("uncertainties"):
+        st.markdown(label("Uncertainties"), unsafe_allow_html=True)
+        for unknown in analysis["uncertainties"]:
+            st.markdown(f"- {esc(unknown)}", unsafe_allow_html=True)
 
-        st.caption(
-            f"{analysis.get('model', 'unknown')} · "
-            f"{usage.get('latency_ms', '?')} ms · "
-            f"{usage.get('total_tokens', '?')} tokens · "
-            f"{'cached' if response.get('cached') else 'fresh'}"
-        )
-        if st.button("Open in Analysis", key=f"plan_{item.get('id')}", type="primary"):
-            st.session_state.message_id = item.get("id")
-            st.session_state.pop("plan_response", None)
-            go("Analysis")
+    st.caption(
+        f"{analysis.get('model', 'unknown')} · "
+        f"{usage.get('latency_ms', '?')} ms · "
+        f"{usage.get('total_tokens', '?')} tokens · "
+        f"{'cached' if response.get('cached') else 'fresh'}"
+    )
+    if st.button("Open in Analysis", key=f"plan_{message_id}", type="primary"):
+        st.session_state.message_id = message_id
+        st.session_state.pop("plan_response", None)
+        go("Analysis")
 
 
 def show_inbox() -> None:
@@ -888,7 +943,16 @@ def show_inbox() -> None:
         return
 
     _apply_pending_selection(emails)
-    analyses = st.session_state.get("analyses", {})
+    analyses = st.session_state.setdefault("analyses", {})
+
+    # The watcher and the digest usually got there first. Pull whatever they
+    # already produced, so the list opens showing which emails were read and
+    # what they asked for, instead of presenting every one of them as though no
+    # model had ever seen it. One probe per message per session.
+    for item in emails:
+        if item.get("id") not in analyses:
+            _preloaded_analysis(item.get("id"))
+
     analyzed_count = sum(1 for item in emails if item.get("id") in analyses)
 
     st.markdown(
@@ -897,8 +961,16 @@ def show_inbox() -> None:
         unsafe_allow_html=True,
     )
 
+    # Freshly analysed emails open themselves; everything else starts folded, so
+    # reopening the inbox does not unfold ten pages of prose.
+    expand_ids = st.session_state.get("_expand_after") or set()
     for item in emails:
-        _email_row(item, analyses.get(item.get("id")))
+        _email_row(
+            item,
+            analyses.get(item.get("id")),
+            expand=item.get("id") in expand_ids,
+        )
+    st.session_state["_expand_after"] = set()
 
     selected = [
         item.get("id") for item in emails if st.session_state.get(f"sel_{item.get('id')}")
@@ -920,18 +992,6 @@ def show_inbox() -> None:
             type="primary", disabled=not selected, width="stretch",
         ):
             _analyze_many(selected)
-
-    if analyzed_count:
-        st.divider()
-        st.markdown("### Analysis results")
-        st.caption(
-            "One card per analyzed email. Re-running an analysis replaces its card "
-            "and costs nothing while the result is cached."
-        )
-        for item in emails:
-            response = analyses.get(item.get("id"))
-            if response:
-                _analysis_card(item, response)
 
 
 def _triage_section(message_id: str) -> None:
