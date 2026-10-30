@@ -211,9 +211,13 @@ def _verify_evidence(analysis: EmailAnalysis, email: EmailDetail) -> EvidenceAud
     return audit
 
 
-def analyse(email: EmailDetail) -> tuple[EmailAnalysis, ModelUsage, EvidenceAudit]:
+def analyse(
+    email: EmailDetail, *, model: str | None = None
+) -> tuple[EmailAnalysis, ModelUsage, EvidenceAudit]:
     """Run the model, validate strictly, verify every citation."""
-    raw, usage = nebius_client.chat_json(build_messages(email), role="fast")
+    raw, usage = nebius_client.chat_json(
+        build_messages(email), role="fast", model=model
+    )
 
     # The model is never asked for the ids or its own name — the server knows
     # them. Injecting before validation means a hallucinated id cannot even

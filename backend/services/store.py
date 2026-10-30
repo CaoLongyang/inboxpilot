@@ -441,6 +441,32 @@ def _row_to_execution(row: sqlite3.Row) -> ExecutionResult:
     )
 
 
+def update_execution(result: ExecutionResult, *, idempotency_key: str) -> None:
+    """Turn a claimed `pending` row into its final outcome.
+
+    The row is inserted *before* Gmail is called and updated afterwards, so the
+    UNIQUE key is held for the whole duration of the write. A crash between the
+    two leaves the row `pending`, which the approval gate treats as "outcome
+    unknown, do not retry" — the only safe reading when a request may have
+    reached Gmail without its response coming back.
+    """
+    with _connect() as conn:
+        conn.execute(
+            """
+            UPDATE execution_logs
+               SET status = ?, draft_id = ?, verified = ?, message = ?
+             WHERE idempotency_key = ?
+            """,
+            (
+                result.status.value,
+                result.draft_id,
+                1 if result.verified else 0,
+                result.message,
+                idempotency_key,
+            ),
+        )
+
+
 def get_execution(action_id: str) -> ExecutionResult | None:
     """Latest outcome for an action id, or None."""
     with _connect() as conn:
@@ -491,4 +517,5 @@ __all__ = [
     "set_proposal_status",
     "stats",
     "try_init_db",
+    "update_execution",
 ]

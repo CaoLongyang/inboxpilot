@@ -29,12 +29,13 @@ def test_request_id_header_is_present() -> None:
     assert response.headers.get("X-Request-ID")
 
 
-def test_unimplemented_endpoint_uses_error_envelope() -> None:
-    # /analyze is implemented as of Day 3; /actions/plan lands on Day 4.
-    response = client.post("/actions/plan", json={"message_id": "abc"})
-    assert response.status_code == 501
+def test_unknown_route_uses_the_same_envelope() -> None:
+    # Every endpoint is implemented as of Day 4, so the envelope is now proven
+    # on a path that genuinely does not exist rather than on a 501 stub.
+    response = client.get("/no/such/route")
+    assert response.status_code == 404
     body = response.json()
-    assert body["error"]["code"] == "not_implemented"
+    assert body["error"]["code"] == "not_found"
     assert body["error"]["message"]
     assert body["error"]["request_id"]
 

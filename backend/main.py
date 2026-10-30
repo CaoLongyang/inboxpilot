@@ -13,6 +13,7 @@ from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.middleware.base import BaseHTTPMiddleware
 
 from backend.config import get_settings
@@ -94,6 +95,28 @@ def create_app() -> FastAPI:
             message=exc.message,
             details=exc.details,
             request_id=request_id,
+        )
+
+    @app.exception_handler(StarletteHTTPException)
+    async def handle_http_error(
+        request: Request, exc: StarletteHTTPException
+    ) -> JSONResponse:
+        """Unmatched routes and framework-level 404/405 must use the envelope too.
+
+        Without this, `GET /no/such/path` answers `{"detail": "Not Found"}` while
+        every other failure answers `{"error": {...}}`. The frontend switches on
+        `error.code`, so a mixed shape turns a clean 404 into `undefined` in the
+        UI — the kind of inconsistency that only shows up during a demo.
+        """
+        code = {
+            404: "not_found",
+            405: "method_not_allowed",
+        }.get(exc.status_code, "http_error")
+        return _error_response(
+            status_code=exc.status_code,
+            code=code,
+            message=str(exc.detail),
+            request_id=getattr(request.state, "request_id", None),
         )
 
     @app.exception_handler(RequestValidationError)

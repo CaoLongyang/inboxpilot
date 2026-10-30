@@ -17,7 +17,8 @@ import logging
 import secrets
 import time
 from datetime import datetime
-from email.utils import parsedate_to_datetime
+from email.message import EmailMessage
+from email.utils import formatdate, make_msgid, parseaddr, parsedate_to_datetime
 from html.parser import HTMLParser
 from typing import Any, Iterator
 
@@ -27,7 +28,7 @@ from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 
 from backend.config import get_settings
-from backend.errors import AuthError, ConfigError, NotFound, NotImplementedYet, UpstreamError
+from backend.errors import AppError, AuthError, ConfigError, NotFound, UpstreamError
 from backend.schemas import EmailDetail, EmailSummaryItem
 from backend.services import token_store
 
@@ -486,13 +487,167 @@ def get_thread(thread_id: str) -> list[EmailDetail]:
 # --------------------------------------------------------------------------
 
 
+def _validate_recipients(addresses: list[str], field: str) -> list[str]:
+    """Reject anything that is not a plain address before it reaches Gmail.
+
+    Deliberately strict: a header-injection attempt (`a@b.com\\nBcc: ...`) and a
+    typo look identical to Gmail, and both would produce a draft nobody asked
+    for. Anything with a control character, a newline, or no `@` is refused.
+    """
+    cleaned: list[str] = []
+    for raw in addresses:
+        value = (raw or "").strip()
+        if not value:
+            continue
+        if any(ch in value for ch in "\r\n\t") or value.count("@") != 1:
+            raise AppError(
+                f"A {field} address is not valid",
+                code="invalid_recipient",
+                status_code=422,
+                details={"field": field},
+            )
+        _, address = parseaddr(value)
+        if not address or "@" not in address or address.count("@") != 1:
+            raise AppError(
+                f"A {field} address is not valid",
+                code="invalid_recipient",
+                status_code=422,
+                details={"field": field},
+            )
+        cleaned.append(value)
+    if not cleaned:
+        raise AppError(
+            f"At least one {field} address is required",
+            code="invalid_recipient",
+            status_code=422,
+            details={"field": field},
+        )
+    return cleaned
+
+
+def build_mime(
+    *,
+    to: list[str],
+    subject: str,
+    body: str,
+    cc: list[str] | None = None,
+    in_reply_to: str | None = None,
+    references: str | None = None,
+) -> bytes:
+    """Serialise a draft to RFC 5322 bytes.
+
+    `EmailMessage` handles the two encoding traps that hand-rolled MIME gets
+    wrong: a non-ASCII subject becomes an RFC 2047 encoded word, and a non-ASCII
+    body is declared UTF-8 rather than silently sent as latin-1. Both matter
+    here because the demo mailbox is Malaysian and the emails contain accents
+    and Malay text.
+    """
+    message = EmailMessage()
+    message["To"] = ", ".join(to)
+    if cc:
+        message["Cc"] = ", ".join(cc)
+    message["Subject"] = subject
+    message["Date"] = formatdate(localtime=True)
+    # A draft needs its own Message-ID so a later reply can reference it.
+    message["Message-ID"] = make_msgid(domain="inboxpilot.local")
+    if in_reply_to:
+        # These two headers are what make Gmail show the draft inside the
+        # existing conversation instead of as a brand new thread.
+        message["In-Reply-To"] = in_reply_to
+        message["References"] = references or in_reply_to
+    message.set_content(body, subtype="plain", charset="utf-8", cte="base64")
+    return message.as_bytes()
+
+
 def create_draft(
     *,
     to: list[str],
     subject: str,
     body: str,
+    cc: list[str] | None = None,
     thread_id: str | None = None,
     in_reply_to: str | None = None,
+    references: str | None = None,
 ) -> str:
-    """Build MIME, create the draft, return the Gmail draft id."""
-    raise NotImplementedYet("Draft creation is not implemented yet (task A11)")
+    """Create a draft in the connected mailbox. Returns the Gmail draft id.
+
+    This is the only function in the codebase that writes to Gmail. It cannot
+    send: `drafts.create` has no send semantics, and no `messages.send` call
+    exists anywhere in the project.
+    """
+    recipients = _validate_recipients(to, "recipient")
+    cc_recipients = _validate_recipients(cc, "cc") if cc else []
+    if not (subject or "").strip():
+        raise AppError(
+            "A draft needs a subject",
+            code="invalid_draft",
+            status_code=422,
+            details={"field": "subject"},
+        )
+    if not (body or "").strip():
+        raise AppError(
+            "A draft needs a body",
+            code="invalid_draft",
+            status_code=422,
+            details={"field": "body"},
+        )
+
+    raw = base64.urlsafe_b64encode(
+        build_mime(
+            to=recipients,
+            cc=cc_recipients,
+            subject=subject.strip(),
+            body=body,
+            in_reply_to=in_reply_to,
+            references=references,
+        )
+    ).decode("ascii")
+
+    request: dict[str, Any] = {"message": {"raw": raw}}
+    if thread_id:
+        request["message"]["threadId"] = thread_id
+
+    service = _service()
+    try:
+        draft = service.users().drafts().create(userId="me", body=request).execute()
+    except HttpError as exc:
+        raise _map_http_error(exc, "drafts.create") from exc
+
+    draft_id = draft.get("id")
+    if not draft_id:
+        raise UpstreamError("Gmail accepted the draft but returned no draft id")
+    log.info("gmail.draft_created draft_id=%s thread_id=%s", draft_id, thread_id or "-")
+    return draft_id
+
+
+def get_draft(draft_id: str) -> dict[str, Any]:
+    """Read a draft back. Used to prove the write actually happened.
+
+    Returns a flat, comparable dict rather than Gmail's payload tree, so the
+    verification step compares values instead of re-walking the MIME structure.
+    """
+    service = _service()
+    try:
+        draft = (
+            service.users()
+            .drafts()
+            .get(userId="me", id=draft_id, format="full")
+            .execute()
+        )
+    except HttpError as exc:
+        raise _map_http_error(exc, "drafts.get") from exc
+
+    message = draft.get("message") or {}
+    payload = message.get("payload") or {}
+    headers = header_map(payload)
+    body_text, _ = extract_bodies(payload)
+    return {
+        "draft_id": draft.get("id") or draft_id,
+        "message_id": message.get("id"),
+        "thread_id": message.get("threadId") or draft.get("message", {}).get("threadId"),
+        "to": _split_addresses(headers.get("to", "")),
+        "cc": _split_addresses(headers.get("cc", "")),
+        "subject": headers.get("subject", ""),
+        "body_text": body_text,
+        "rfc_message_id": headers.get("message-id", ""),
+    }
