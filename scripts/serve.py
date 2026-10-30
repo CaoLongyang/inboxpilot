@@ -2,13 +2,18 @@
 
 Usage:
     .\\.venv\\Scripts\\python.exe -m scripts.serve
-    .\\.venv\\Scripts\\python.exe -m scripts.serve --reload
+    .\\.venv\\Scripts\\python.exe -m scripts.serve --no-reload
     .\\.venv\\Scripts\\python.exe -m scripts.serve --port 8001
 
 Why this exists: `uvicorn ... --reload` spawns a reloader plus a child process,
 and the reloader also watches the whole repository. Editing a test file, a log
 or the local memory folder then restarts the server mid-request. This launcher
 watches only the source directories and is a single short command to type.
+
+Reload is **on by default** and that default is deliberate. Without it, editing
+`backend/` leaves a server running yesterday's routes, and the symptom is a 404
+in the UI that looks like a broken feature rather than a stale process. Opt out
+with `--no-reload` when you want a stable server during a demo recording.
 """
 
 from __future__ import annotations
@@ -49,14 +54,23 @@ def main() -> int:
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument(
         "--reload",
+        dest="reload",
         action="store_true",
-        help="Restart on source changes (backend/ and frontend/ only)",
+        default=True,
+        help="Restart on source changes (backend/ and frontend/ only). Default.",
+    )
+    parser.add_argument(
+        "--no-reload",
+        dest="reload",
+        action="store_false",
+        help="Do not restart on source changes; use during a recording.",
     )
     args = parser.parse_args()
 
     print(f"InboxPilot API -> http://{args.host}:{args.port}")
     print(f"  docs   : http://{args.host}:{args.port}/docs")
     print(f"  health : http://{args.host}:{args.port}/health")
+    print(f"  reload : {'on (backend/ changes restart it)' if args.reload else 'off'}")
     print("  stop   : Ctrl+C\n")
 
     uvicorn.run(

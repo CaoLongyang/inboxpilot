@@ -124,6 +124,23 @@ def error_message(exc: APIError) -> None:
         st.error(f"{exc.code}: {exc}")
 
 
+def stale_backend_hint(exc: APIError) -> bool:
+    """Explain a 404 on an endpoint that definitely exists in this codebase.
+
+    The backend process is not the code on disk: if it was started before the
+    route was added, the UI shows `not_found: Not Found`, which reads like a
+    broken feature rather than a stale server. Say the real cause instead.
+    """
+    if exc.code != "not_found":
+        return False
+    st.error(
+        "The backend is running an older version of the code: it does not have "
+        "this endpoint yet. Stop it (Ctrl+C in its terminal) and start it again "
+        "with `python scripts/serve.py`."
+    )
+    return True
+
+
 @st.cache_data(ttl=20, show_spinner=False)
 def _health_snapshot() -> dict[str, Any]:
     """Cached health check for the sidebar badge.
@@ -853,7 +870,8 @@ def _triage_section(message_id: str) -> None:
                 )
             st.session_state.setdefault("assessments", {})[message_id] = assessment
         except APIError as exc:
-            error_message(exc)
+            if not stale_backend_hint(exc):
+                error_message(exc)
             return
 
     if not assessment:
@@ -1022,7 +1040,8 @@ def show_schedule() -> None:
     try:
         profile = api_request("GET", "/schedule", timeout=10.0)
     except APIError as exc:
-        error_message(exc)
+        if not stale_backend_hint(exc):
+            error_message(exc)
         return
 
     blocks = profile.get("busy_blocks") or []
