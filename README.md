@@ -10,8 +10,19 @@ real Gmail draft and verifies that it exists.
 Built for the **Nebius x NVIDIA Global AI Hackathon**, Track 2: *Best Apps and
 Agents*.
 
-> Status: early skeleton. Nothing in this repository sends email, and no write
-> operation can happen without explicit user approval.
+> Status: the full loop runs end to end on a real mailbox — real Gmail in, real
+> Nemotron analysis out, real Gmail draft created and read back. 182 tests.
+> Nothing in this repository sends email, and no write can happen without
+> explicit user approval.
+
+## What the UI actually is
+
+An inbox list, not a wizard. Ten emails load at once with enough of each message
+to decide about it, and every row carries its own **Analyze** button, so one
+email or ten can be analyzed without leaving the list. Results stay attached to
+the row that produced them; a second pass never loses the first answer. The
+deep-dive page exists for the one email where a reply gets proposed and
+approved, because that is where the approval gate lives.
 
 ## The one flow that matters
 
@@ -52,10 +63,22 @@ backend/
   schemas.py           API contract (single source of truth)
   errors.py            unified error model
   routers/             health, auth, emails, analyze, actions
-  services/            nebius_client.py, gmail_client.py
+  services/
+    nebius_client.py   Token Factory client, thinking on/off, JSON mode
+    analyzer.py        email -> structured analysis, quote verification
+    gmail_client.py    read messages, build MIME, create/read drafts
+    planner.py         decides whether a reply is warranted, drafts it
+    drafter.py         the approval gate, idempotency, read-back verify
+    store.py           SQLite: analyses, proposals, execution log
+    token_store.py     one place that knows where the refresh token lives
 frontend/
-  app.py               Streamlit UI
-tests/                 contract and health tests
+  app.py               Streamlit UI (inbox list, analysis, approval)
+scripts/
+  check_nebius.py      verify the key, list reachable models
+  bench_models.py      model comparison behind the README table
+  analyze_one.py       analyze one real email from the CLI
+  approve_one.py       drive the full approve -> draft -> verify path
+tests/                 182 contract, gate and reliability tests
 docs/
   oauth-checklist.md   Day 1 Gmail OAuth steps + the refresh-token trap
 ```
@@ -110,13 +133,81 @@ See `.env.example`. Names only, no secrets are committed:
 
 ## How we use NVIDIA Nemotron on Nebius
 
-_To be completed with measured values once the model IDs are confirmed._
+Every answer InboxPilot shows comes from a live call to **Nebius Token Factory**
+(`https://api.tokenfactory.nebius.com/v1/`, OpenAI-compatible). Nothing is
+pre-generated, cached from a fixture, or produced by a smaller local model —
+if Nebius is unreachable, the app reports an error instead of inventing output.
 
-- Runtime inference: every analysis request calls the Nebius Token Factory
-  inference API. No pre-generated results are served.
-- Model split: a fast Nemotron model handles classification and extraction; a
-  reasoning model is used only for multi-step decision analysis.
-- What we record per call: model id, latency, token usage, request status.
+### Where each model is used
+
+| Model | Role | Why this one |
+|---|---|---|
+| `nvidia/nemotron-3-super-120b-a12b` | Read one email: category, key facts with quotes, action items, uncertainties | Highest measured JSON reliability at the latency we can afford |
+| `nvidia/Nemotron-3-Ultra-550b-a55b` | Decide whether a reply is warranted and write it | Multi-step judgement (who sent it, what is being asked, what we do not know) |
+
+Both are NVIDIA Nemotron models served by Nebius. The model IDs are
+configuration (`NEBIUS_MODEL_FAST` / `NEBIUS_MODEL_REASONING`), so the split is
+visible in `.env.example` rather than buried in code.
+
+### What we had to measure to make it fast
+
+Nemotron 3 is a **hybrid reasoning** model: it writes to `reasoning_content`
+before it writes an answer. For extraction that is wasted work, and on a tight
+`max_tokens` budget it is fatal — the whole budget goes to reasoning and
+`content` comes back empty with `finish_reason="length"`.
+
+We send `chat_template_kwargs: {"enable_thinking": false}` on the extraction
+call and leave thinking on for the reasoning call. Measured on the same email:
+
+| | latency | completion tokens | reasoning chars |
+|---|---|---|---|
+| thinking on | 2793 ms | 140 | 183 |
+| thinking off | **1088 ms** | **81** | 0 |
+
+That is **2.6× faster and 42% fewer tokens** for identical extraction quality.
+It is the single largest speed win in the project, and it exists only because
+the default behaviour was measured rather than assumed.
+
+### Why the "fast" model is not the smallest one
+
+The obvious assumption — smaller model, faster answer — did not survive
+measurement. Same email, same prompt, three runs each (`scripts/bench_models.py`):
+
+| Model | Valid JSON | Latency | Output tokens | Fabricated quotes |
+|---|---|---|---|---|
+| `nvidia/nemotron-3-super-120b-a12b` | 3/3 | 4.9–5.7 s | 1118–1124 | 0 |
+| `nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B` | 3/3 | 4.9–7.4 s | 1229–1330 | 1 |
+| `nvidia/Nemotron-3_5-Lightning` | 0/3 | — | — | never valid JSON |
+
+The smaller model was not faster and it invented a quote that does not appear
+in the email. For an agent whose output a human is asked to approve, a
+fabricated citation is a correctness bug, not a quality trade-off, so we pay
+for the model that does not hallucinate evidence.
+
+### Guardrails that ride on the model output
+
+- **Citations are verified, not trusted.** Every `EXPLICIT` key fact must carry
+  a quote; the backend checks that the quote actually occurs in the email body
+  and downgrades or drops the fact when it does not.
+- **Truncation is a first-class failure.** `finish_reason="length"` is reported
+  as `output_truncated` and retried once with double the token budget, instead
+  of surfacing as a confusing "malformed JSON".
+- **The model never chooses the recipient.** `To:` is read from the email
+  header by the backend. A prompt-injected email cannot redirect a draft.
+- **Email content is data, not instructions.** The system prompt says so, and
+  the approval gate is the backstop when the model is fooled anyway.
+
+`scripts/check_nebius.py` lists the models a key can actually reach;
+`scripts/bench_models.py` reproduces the table above.
+
+### A note for judges running the demo
+
+Google shows an "unverified app" warning before the Gmail consent screen,
+because `gmail.readonly` and `gmail.compose` are restricted scopes and
+verification is not available to a hackathon project. Click **Advanced →
+Go to InboxPilot (unsafe)**. The app requests read-only access plus draft
+creation only: there is no send call anywhere in the codebase, and `/health`
+reports `email_send_enabled: false`.
 
 ## What is intentionally not supported
 
