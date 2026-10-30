@@ -213,6 +213,19 @@ class AnalyzeResponse(APIModel):
     cached: bool = False
 
 
+class CachedAnalysis(APIModel):
+    """A stored analysis, without asking for a new one.
+
+    `analysis` is None when nothing has been analysed yet. That is a normal
+    answer, not an error: the analysis page asks on open, and "not analysed
+    yet" simply means the page falls back to its "Analyze this email" button.
+    """
+
+    analysis: EmailAnalysis | None = None
+    usage: ModelUsage | None = None
+    cached: bool = False
+
+
 class PlanRequest(APIModel):
     message_id: str
 

@@ -73,6 +73,43 @@ land in the editor for review before they are saved. Rows it cannot read
 commitment, because a misread timetable would quietly corrupt every later
 verdict.
 
+### It reads before you ask
+
+Everything above is reactive: the user clicks, the agent answers. A background
+watcher (`backend/services/watcher.py`) flips that around. It polls the inbox,
+analyses what arrives, and puts a card in the corner of the screen — outside the
+browser, because that is where the user actually is.
+
+```
+poll inbox ──> filter ──> analyse ──> urgency ──┬─> desktop card (2 and 3)
+                                                └─> analysis cache (all)
+```
+
+Three decisions make it something you would leave running:
+
+- **Silence by default.** Only urgency 2 and 3 produce a card. Promotions, social
+  notifications, bulk senders and mail the user sent themselves are filtered
+  before they cost an inference call. A watcher that announces everything is a
+  watcher you switch off.
+- **The model extracts, Python decides.** `urgency()` is a rule over structured
+  fields, not a model opinion, so the same email always produces the same card.
+  A notification policy that drifts between runs is not a policy.
+- **Deduplication by message id, not by unread state.** Reading a message on a
+  phone clears its `UNREAD` label, and marking an old message unread would make
+  it look new. The seen table in SQLite is the record, and the first cycle takes
+  a silent baseline so a full inbox does not fire twenty cards.
+
+The side effect is the one users notice: because every arriving message is
+already analysed, opening one shows the result immediately instead of waiting
+for a model round trip. `GET /analyses/{id}` reads the cache and never triggers
+inference, so browsing during a demo cannot spend credit.
+
+Polling rather than push is deliberate. Gmail's push notifications need a public
+HTTPS endpoint, which this project does not have. IMAP IDLE would be instant
+without one, but it requires the full-mailbox `https://mail.google.com/` scope —
+an enormous privacy downgrade for a few seconds of latency. One request a
+minute costs about 0.6% of the daily Gmail quota.
+
 ## Architecture
 
 ```
@@ -103,18 +140,27 @@ backend/
     gmail_client.py    read messages, build MIME, create/read drafts
     planner.py         decides whether a reply is warranted, drafts it
     drafter.py         the approval gate, idempotency, read-back verify
-    store.py           SQLite: analyses, proposals, execution log
+    schedule.py        interval maths: does this clash with my week?
+    triage.py          should I attend this? (verdict table, no model)
+    timetable.py       photo of a timetable -> busy blocks
+    watcher.py         background poll: filter, analyse, decide, announce
+    notify.py          desktop cards (Tk), console fallback
+    store.py           SQLite: analyses, proposals, execution log, seen mail
     token_store.py     one place that knows where the refresh token lives
 frontend/
   app.py               Streamlit UI (inbox list, analysis, approval)
 scripts/
+  serve.py             run the API (--watch adds the mail watcher)
+  watch.py             run the watcher on its own
+  start_all.py         API + UI in one process, for a single-port host
   check_nebius.py      verify the key, list reachable models
   bench_models.py      model comparison behind the README table
   analyze_one.py       analyze one real email from the CLI
   approve_one.py       drive the full approve -> draft -> verify path
-tests/                 182 contract, gate and reliability tests
+tests/                 272 contract, gate and reliability tests
 docs/
   oauth-checklist.md   Day 1 Gmail OAuth steps + the refresh-token trap
+  DEPLOY.md            hosting options, env vars, and why Pages cannot
 ```
 
 ## Setup
@@ -143,6 +189,21 @@ uvicorn backend.main:app --reload --port 8000
 streamlit run frontend/app.py
 # http://localhost:8501
 ```
+
+### Run it watching your inbox
+
+```bash
+# cards appear in the corner of the screen when mail needs you
+python -m scripts.watch
+
+# or start it alongside the API, in one command
+python -m scripts.serve --watch
+```
+
+`python -m scripts.watch --once --no-notify` runs a single cycle and prints
+instead of drawing, which is the quickest way to see what it would say.
+`--reset` forgets which messages have been announced, so the current inbox can
+be replayed without waiting for new mail.
 
 ### Test
 
@@ -247,8 +308,13 @@ reports `email_send_enabled: false`.
 
 ## What is intentionally not supported
 
-Sending email, deleting, archiving, forwarding, unattended scheduled agents,
-attachment understanding, and multi-user enterprise administration.
+Sending email, deleting, archiving, forwarding, attachment understanding, and
+multi-user enterprise administration.
+
+The background watcher is the one thing that runs without being asked, and it
+is deliberately powerless: it reads and it notifies. It cannot create a draft,
+change a label, or spend an approval. Every write in this project still goes
+through the same gate, whether a human or the watcher noticed the email first.
 
 ## License
 

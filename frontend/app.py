@@ -588,6 +588,34 @@ def _analyze(message_id: str) -> tuple[bool, str]:
     return True, ""
 
 
+def _preloaded_analysis(message_id: str) -> dict | None:
+    """Show an analysis the background watcher already produced.
+
+    The watcher analyses new mail before anyone opens the page, so the result
+    is usually already in the database. Asking for it on open turns "click
+    Analyze, wait, read" into "read". Probed once per message per session: a
+    negative answer is remembered so an un-analysed email does not cause a
+    request on every rerun.
+    """
+    existing = st.session_state.setdefault("analyses", {}).get(message_id)
+    if existing:
+        return existing
+
+    probed = st.session_state.setdefault("_probed", set())
+    if message_id in probed:
+        return None
+    probed.add(message_id)
+
+    try:
+        payload = api_request("GET", f"/analyses/{message_id}", timeout=10.0)
+    except APIError:
+        return None
+    if not payload.get("analysis"):
+        return None
+    st.session_state["analyses"][message_id] = payload
+    return payload
+
+
 def _analyze_many(message_ids: list[str]) -> None:
     total = len(message_ids)
     progress = st.progress(0.0, text=f"Analyzing 0/{total}...")
@@ -955,7 +983,7 @@ def show_analysis() -> None:
         unsafe_allow_html=True,
     )
 
-    cached = st.session_state.get("analyses", {}).get(message_id)
+    cached = _preloaded_analysis(message_id)
     left, right = st.columns([1.4, 1])
     if left.button(
         "Re-analyze" if cached else "Analyze this email",

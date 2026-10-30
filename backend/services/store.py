@@ -111,6 +111,24 @@ CREATE TABLE IF NOT EXISTS schedule_profile (
     payload    TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
+
+-- What the watcher has already considered, so it does not announce the same
+-- mail twice. This is a record of decisions (announced, filtered, or already
+-- analysed), not a copy of the mailbox: a message id is all it holds.
+CREATE TABLE IF NOT EXISTS watcher_seen (
+    message_id TEXT PRIMARY KEY,
+    seen_at    TEXT NOT NULL
+);
+
+-- One row, id = 'default'. Distinguishes "the watcher has never run" from
+-- "the watcher ran and the inbox happened to be empty". Without it, starting
+-- the watcher on an inbox with 20 unread messages would fire 20 cards, and an
+-- empty inbox would make the next arrival look like a baseline.
+CREATE TABLE IF NOT EXISTS watcher_state (
+    id         TEXT PRIMARY KEY,
+    payload    TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
 """
 
 _init_lock = threading.Lock()
@@ -564,6 +582,105 @@ def _is_configured(profile: ScheduleProfile) -> bool:
 
 
 # --------------------------------------------------------------------------
+# Watcher bookkeeping (background mail scan)
+# --------------------------------------------------------------------------
+
+
+WATCHER_ID = "default"
+
+
+def watcher_baselined() -> bool:
+    """Whether the watcher has taken its initial snapshot of the inbox.
+
+    Never raises: if this cannot be read, reporting False means the watcher
+    re-baselines, which costs one silent cycle and no notifications. The
+    opposite default would risk a burst of cards for old mail.
+    """
+    try:
+        with _connect() as conn:
+            row = conn.execute(
+                "SELECT payload FROM watcher_state WHERE id = ?", (WATCHER_ID,)
+            ).fetchone()
+    except sqlite3.Error as exc:
+        log.warning("store.watcher_state_read_failed type=%s", type(exc).__name__)
+        return False
+    if row is None:
+        return False
+    try:
+        return bool(json.loads(row["payload"]).get("baselined"))
+    except (json.JSONDecodeError, AttributeError):
+        return False
+
+
+def mark_baselined() -> None:
+    """Record that the first snapshot has been taken. Best effort."""
+    try:
+        with _connect() as conn:
+            conn.execute(
+                "INSERT INTO watcher_state (id, payload, updated_at) VALUES (?, ?, ?) "
+                "ON CONFLICT(id) DO UPDATE SET payload = excluded.payload, "
+                "updated_at = excluded.updated_at",
+                (WATCHER_ID, json.dumps({"baselined": True}), _utcnow()),
+            )
+    except sqlite3.Error as exc:
+        log.warning("store.watcher_state_write_failed type=%s", type(exc).__name__)
+
+
+def seen_ids(message_ids: list[str]) -> set[str]:
+    """Which of these ids the watcher has already dealt with. Never raises.
+
+    On failure it returns an empty set, so every message looks new. That is the
+    safe direction: a duplicate card is a small annoyance, while silently
+    dropping new mail would make the feature look broken.
+    """
+    if not message_ids:
+        return set()
+    try:
+        with _connect() as conn:
+            placeholders = ",".join("?" * len(message_ids))
+            rows = conn.execute(
+                f"SELECT message_id FROM watcher_seen WHERE message_id IN ({placeholders})",
+                message_ids,
+            ).fetchall()
+    except sqlite3.Error as exc:
+        log.warning("store.seen_read_failed type=%s", type(exc).__name__)
+        return set()
+    return {row["message_id"] for row in rows}
+
+
+def mark_seen(message_ids: list[str]) -> None:
+    """Remember these ids. Best effort: a lost row only means a repeat card."""
+    if not message_ids:
+        return
+    now = _utcnow()
+    try:
+        with _connect() as conn:
+            conn.executemany(
+                "INSERT OR IGNORE INTO watcher_seen (message_id, seen_at) VALUES (?, ?)",
+                [(message_id, now) for message_id in message_ids],
+            )
+    except sqlite3.Error as exc:
+        log.warning("store.seen_write_failed type=%s", type(exc).__name__)
+
+
+def forget_seen() -> int:
+    """Clear which messages have been announced. Returns rows removed.
+
+    The baseline flag is deliberately kept. Clearing it too would make the next
+    cycle re-baseline and stay silent, which is the opposite of what this is
+    for: replaying the current inbox — for a second take of the demo video,
+    say — without waiting for genuinely new mail.
+    """
+    try:
+        with _connect() as conn:
+            removed = conn.execute("DELETE FROM watcher_seen").rowcount
+    except sqlite3.Error as exc:
+        raise StorageError("The watcher history could not be cleared") from exc
+    log.info("store.watcher_reset removed=%d", removed)
+    return removed
+
+
+# --------------------------------------------------------------------------
 # Introspection (used by scripts/check_store.py and debugging)
 # --------------------------------------------------------------------------
 
@@ -575,7 +692,7 @@ def stats() -> dict[str, int]:
             table: conn.execute(f"SELECT COUNT(*) AS n FROM {table}").fetchone()["n"]
             for table in (
                 "analysis_results", "action_proposals", "execution_logs",
-                "schedule_profile",
+                "schedule_profile", "watcher_seen",
             )
         }
 
@@ -587,15 +704,20 @@ __all__ = [
     "cache_store",
     "db_path",
     "find_execution_by_key",
+    "forget_seen",
     "get_execution",
     "get_proposal",
     "init_db",
     "load_schedule",
+    "mark_baselined",
+    "mark_seen",
     "record_execution",
     "save_proposal",
     "save_schedule",
+    "seen_ids",
     "set_proposal_status",
     "stats",
     "try_init_db",
     "update_execution",
+    "watcher_baselined",
 ]

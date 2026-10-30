@@ -4,12 +4,30 @@ import logging
 
 from fastapi import APIRouter
 
-from backend.schemas import AnalyzeRequest, AnalyzeResponse
+from backend.schemas import AnalyzeRequest, AnalyzeResponse, CachedAnalysis
 from backend.services import analyzer, gmail_client, store, token_store
 
 router = APIRouter(tags=["analysis"])
 
 log = logging.getLogger(__name__)
+
+
+@router.get("/analyses/{message_id}", response_model=CachedAnalysis)
+def read_cached_analysis(message_id: str) -> CachedAnalysis:
+    """Return an analysis that already exists, or an empty answer.
+
+    The background watcher analyses mail before anyone asks for it, so the
+    analysis page calls this on open: a message the watcher has already read
+    appears instantly instead of waiting for a model round trip. Reading the
+    cache must never trigger inference, which is why this is a separate route
+    from /analyze — /analyze would analyse on a miss, and a page that costs
+    money to open is not a page you can click around during a demo.
+    """
+    hit = store.cache_lookup(message_id)
+    if hit is None:
+        return CachedAnalysis()
+    analysis, usage = hit
+    return CachedAnalysis(analysis=analysis, usage=usage, cached=True)
 
 
 @router.post("/analyze", response_model=AnalyzeResponse)

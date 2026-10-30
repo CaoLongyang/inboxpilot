@@ -205,3 +205,27 @@ def test_unparseable_model_output_is_a_clean_502(
     assert response.status_code == 502
     assert response.json()["error"]["code"] == "upstream_error"
     assert store.cache_lookup("msg-cache") is None
+
+
+def test_reading_the_cache_never_triggers_analysis(fake_pipeline: dict[str, int]) -> None:
+    # The analysis page calls this on open. If it analysed on a miss, simply
+    # navigating around the app during a demo would spend credit.
+    response = client.get("/analyses/msg-cache")
+
+    assert response.status_code == 200
+    assert response.json()["analysis"] is None
+    assert response.json()["cached"] is False
+    assert fake_pipeline == {"gmail": 0, "model": 0}
+
+
+def test_the_cached_route_returns_what_the_watcher_produced(
+    fake_pipeline: dict[str, int]
+) -> None:
+    client.post("/analyze", json={"message_id": "msg-cache"})
+
+    body = client.get("/analyses/msg-cache").json()
+
+    assert body["cached"] is True
+    assert body["analysis"]["message_id"] == "msg-cache"
+    assert body["usage"]["latency_ms"] == 1500
+    assert fake_pipeline == {"gmail": 1, "model": 1}, "the second read is free"
