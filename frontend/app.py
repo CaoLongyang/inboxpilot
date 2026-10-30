@@ -552,6 +552,12 @@ def _when(item: dict) -> str:
         from datetime import datetime
 
         parsed = datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
+        # Mail carries whatever offset the sender's server wrote — Gmail stores
+        # a message sent from Malaysia to a US-configured account as -0700. The
+        # instant is right; the wall clock is not the reader's. Convert before
+        # printing, or every foreign email appears to have arrived at 1am.
+        if parsed.tzinfo is not None:
+            parsed = parsed.astimezone()
         return parsed.strftime("%d %b %Y, %H:%M")
     except ValueError:
         return str(raw)[:16]
